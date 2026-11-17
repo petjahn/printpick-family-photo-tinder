@@ -1,0 +1,20 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Shared Family Workspace rules
+    function isAllowedFamilyMember() {
+      return request.auth != null &&
+        request.auth.token.email_verified == true &&
+        (
+          // Replace or extend with your family's Google email addresses,
+          // or manage dynamically via workspaces/family/config/settings
+          !exists(/databases/$(database)/documents/workspaces/family/config/settings) ||
+          request.auth.token.email in get(/databases/$(database)/documents/workspaces/family/config/settings).data.allowedEmails
+        );
+    }
+
+    match /workspaces/family/{document=**} {
+      allow read, write: if isAllowedFamilyMember();
+    }
+  }
+}

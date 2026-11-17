@@ -1,29 +1,57 @@
-# PrintPick — Family Photo Tinder for Google Photos
+# PrintPick v2 — Family Photo Culler for Google Photos & Firebase
 
-A zero-setup, single-file web application for rapidly culling family photos from **Google Photos** (`Shift + D` `.zip` exports, local folders, or the Google Photos Picker API), comparing burst shots of kids side-by-side, skipping previously printed pictures, and exporting a ready-to-print `.zip` order for your local print shop.
+A mobile-first swipe culler and desktop admin console connected directly to **Google Photos** (via the Google Photos Picker API) and backed by **Firebase (Google Auth + Cloud Firestore)**.
 
-## Features
+---
 
-- **Tinder-Style Swiping & Keyboard Speed-Culling**
-  - `→` or `Space`: **Print (1 copy)**
-  - `↑` or `S`: **Super-Print (2 copies — e.g. extra copy for grandparents)**
-  - `←` or `X`: **Skip / Pass**
-  - `Backspace` or `U`: **Undo last swipe**
-- **Automatic Burst Grouping & Sharpness Scoring**
-  - Groups photos taken within 8 seconds of each other and computes a client-side Laplacian sharpness score to highlight the sharpest shot in each burst.
-  - Press **`B`** to compare all burst shots side-by-side and pick the best one (automatically skipping the rest of the burst).
-- **4×6 / 5×7 Print Crop Safe-Zone Guide (`C`)**
-  - Overlays a 3:2 (4×6") or 7:5 (5×7") crop guide over 4:3 phone photos so you can verify heads and edges won't be trimmed by the print lab.
-- **2.2× Face Loupe (`Z`)**
-  - Instantly zoom in on faces to spot blinks or motion blur.
-- **Already-Printed History Guard**
-  - Remembers every photo you have marked as printed (`localStorage` + JSON backup/restore) so even if old photos remain starred in Google Photos, they are automatically skipped in future batches.
-- **1-Click Print Shop `.ZIP` & `.CSV` Export**
-  - Packages your selected winners into a clean `Print_Order_YYYY-MM-DD.zip` organized by print size and copy count (`4x6_1_copy/`, `4x6_2_copies/`) alongside `PRINT_SHOP_ORDER_SHEET.csv`.
+## Key Features
 
-## Quick Start
+### 1. Two Distinct Interfaces
+- **Mobile Swipe Interface (`#swipe`)** — Optimized for one-handed phone swiping (`100dvh`), also supporting keyboard and mouse on desktop/iPad:
+  - **Swipe Right (`→`):** Mark photo for **Print** (`status: 'print'`).
+  - **Swipe Left (`←`):** **Ignore** and mark photo as **Shown** (`status: 'shown'`) in Firestore so neither partner is shown the photo again.
+  - **Swipe Up (`↑`):** Mark photo for **Deletion** (`status: 'delete'`).
+  - **Undo (`↩` / `Backspace`):** Revert the last swipe in Firestore and animate the card back onto the top of the deck.
+- **Admin Console (`#admin`)** — Manage all three photo buckets across devices:
+  - **Marked for Print:** Inspect thumbnails, single/bulk **Unmark**, **Download Print ZIP (`.zip`)**, **Refresh Expired 60m Google URLs**, and click **Mark Batch as Printed** (empties the Print queue while permanently keeping those photos marked as already seen/printed).
+  - **Marked for Deletion:** Groups photos by capture date (`YYYY-MM-DD`) with **Open Date in Google Photos** deep-links and filename copy helpers so you can quickly trash them in Google Photos, then click **Confirm Deleted** or **Unmark**.
+  - **Marked as Shown:** Browse ignored and previously printed photos to rescue accidental left-swipes (**Unmark** back to the swipe deck or **Move to Print**).
 
-1. Open `index.html` in any modern browser.
-2. In [Google Photos](https://photos.google.com), open your **Favorites (Starred)** or monthly photos, select a batch, and press **`Shift + D`** to download `Photos.zip`.
-3. Drag and drop `Photos.zip` (or a folder of images) directly onto the PrintPick window.
-4. Swipe through your photos, click **Download Print Shop Order (.ZIP)**, and click **✓ Lock as Printed** so next month's batch automatically skips them.
+### 2. Firestore-Only Shared Family Architecture
+- Stores compact (`~8–12 KB`) base64 WebP thumbnails directly in Cloud Firestore (`workspaces/family/photos/{photoId}`), so Admin thumbnails work indefinitely across all devices without needing Firebase Storage.
+- Caches full-resolution images opportunistically in local `IndexedDB` and supports 1-click Picker URL refresh when downloading the Print `.zip` after Google's 60-minute `baseUrl` window expires.
+- Shared family allowlist (`VITE_ALLOWED_EMAILS` + [firestore.rules](./firestore.rules)) lets you and your partner share one real-time Print / Delete / Shown database.
+
+---
+
+## Setup Guide
+
+### 1. Firebase Project & Firestore
+1. Create a project in the [Firebase Console](https://console.firebase.google.com/).
+2. Enable **Authentication → Sign-in method → Google**.
+3. Enable **Cloud Firestore** and publish the security rules from [firestore.rules](./firestore.rules).
+
+### 2. Enable Google Photos Picker API
+1. Open the [Google Cloud Console](https://console.cloud.google.com/) for the same project.
+2. Go to **APIs & Services → Library** and enable **Google Photos Picker API** (`photospicker.googleapis.com`).
+3. Under **OAuth consent screen**, add the scope `https://www.googleapis.com/auth/photospicker.mediaitems.readonly` and add your family emails as Test Users (or set publishing status to Production).
+
+### 3. Configure Credentials
+You can either:
+- Click the **Settings (gear icon)** in the top-right corner of the running web app and paste your Firebase Project ID, API Key, and allowed family emails (saved in `localStorage`), **or**
+- Copy [.env.example](./.env.example) to `.env` for local development / set `VITE_*` repository secrets for the automated GitHub Pages workflow ([.github/workflows/deploy.yml](./.github/workflows/deploy.yml)).
+
+---
+
+## Local Development
+
+```bash
+npm install
+npm run dev
+```
+
+Build for production:
+
+```bash
+npm run build
+```
