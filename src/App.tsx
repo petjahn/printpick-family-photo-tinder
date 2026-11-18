@@ -282,6 +282,15 @@ export const App: React.FC = () => {
             <div className="brand-title">PrintPick</div>
             <div className="brand-subtitle">
               {fbConnected ? `Firestore: ${config.firebaseProjectId}` : 'Demo Mode (Local Mirror)'}
+              {' • '}
+              <a
+                href="./privacy.html"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: 'var(--text-secondary)', textDecoration: 'underline' }}
+              >
+                Privacy
+              </a>
             </div>
           </div>
         </div>
