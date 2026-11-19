@@ -1,14 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { User } from 'firebase/auth';
-import {
-  Smartphone,
-  ShieldCheck,
-  ImagePlus,
-  Settings,
-  LogIn,
-  LogOut,
-  Database,
-} from 'lucide-react';
+import { Layers, LayoutGrid, Plus, User as UserIcon, Camera } from 'lucide-react';
 import { CandidatePhoto, PhotoRecord, PhotoStatus, RuntimeConfig, UndoAction } from './types';
 import { isFirebaseConfigured, loadRuntimeConfig, saveRuntimeConfig } from './services/config';
 import {
@@ -30,7 +22,7 @@ import {
 } from './services/googlePhotos';
 import { generateDemoCandidates } from './services/demoData';
 import { SwipeView } from './components/SwipeView';
-import { AdminView } from './components/AdminView';
+import { AdminTab, AdminView } from './components/AdminView';
 import { ConfigModal } from './components/ConfigModal';
 
 type AppMode = 'swipe' | 'admin';
@@ -39,6 +31,7 @@ export const App: React.FC = () => {
   const [mode, setMode] = useState<AppMode>(() =>
     window.location.hash === '#admin' ? 'admin' : 'swipe'
   );
+  const [adminInitialTab, setAdminInitialTab] = useState<AdminTab>('print');
   const [config, setConfig] = useState<RuntimeConfig>(() => loadRuntimeConfig());
   const [user, setUser] = useState<User | null>(null);
   const [accessToken, setAccessToken] = useState<string>(() => getStoredAccessToken());
@@ -47,13 +40,13 @@ export const App: React.FC = () => {
   const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [pickerLoadingText, setPickerLoadingText] = useState('');
-  const [authError, setAuthError] = useState('');
+  const [toastError, setToastError] = useState('');
 
-  // Keep URL hash in sync with active interface (#swipe vs #admin)
-  const switchMode = (nextMode: AppMode) => {
+  const switchMode = useCallback((nextMode: AppMode, tab?: AdminTab) => {
+    if (tab) setAdminInitialTab(tab);
     setMode(nextMode);
     window.location.hash = nextMode;
-  };
+  }, []);
 
   useEffect(() => {
     const onHashChange = () => {
@@ -64,31 +57,47 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
 
-  // Subscribe to Firebase Auth & Family Firestore collection
+  // Auth listener
   useEffect(() => {
     const unsubAuth = subscribeAuthState(config, (u) => setUser(u));
-    const unsubPhotos = subscribeFamilyPhotos(
-      config,
-      (map) => setRecords(map),
-      (err) => setAuthError(err.message)
-    );
-    return () => {
-      unsubAuth();
-      unsubPhotos();
-    };
+    return () => unsubAuth();
   }, [config]);
 
-  // Seed initial sample candidates so the swipe deck works immediately before picking
-  const loadDemoRoll = useCallback(async () => {
+  const isAuthenticated = Boolean(user);
+
+  // Subscribe to family photos (Firestore when authenticated, local mirror before sign-in)
+  useEffect(() => {
+    const unsubPhotos = subscribeFamilyPhotos(
+      config,
+      isAuthenticated,
+      (map) => setRecords(map),
+      (err) => setToastError(err.message)
+    );
+    return () => unsubPhotos();
+  }, [config, isAuthenticated]);
+
+  const loadDemoRoll = useCallback(async (resetSwipedSamples = false) => {
     const demoItems = await generateDemoCandidates();
-    setCandidates(demoItems);
-  }, []);
+    if (resetSwipedSamples && demoItems.length > 0) {
+      const sampleIds = demoItems.map((d) => d.id);
+      setRecords((prev) => {
+        const next = { ...prev };
+        for (const id of sampleIds) delete next[id];
+        return next;
+      });
+      await bulkRemovePhotoRecords(config, isAuthenticated, sampleIds).catch(() => {});
+    }
+    setCandidates((prev) => {
+      const nonSample = prev.filter((p) => !p.id.startsWith('sample_'));
+      return [...demoItems, ...nonSample];
+    });
+  }, [config, isAuthenticated]);
 
   useEffect(() => {
-    loadDemoRoll();
-  }, [loadDemoRoll]);
+    loadDemoRoll(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Filter out any candidate photo that already has a status in Firestore (print, delete, shown, printed)
   const unseenQueue = useMemo(
     () => candidates.filter((c) => !records[c.id]),
     [candidates, records]
@@ -104,7 +113,7 @@ export const App: React.FC = () => {
   }, [records]);
 
   const handleGoogleSignIn = async (): Promise<string> => {
-    setAuthError('');
+    setToastError('');
     if (!isFirebaseConfigured(config)) {
       setShowConfigModal(true);
       return '';
@@ -118,39 +127,37 @@ export const App: React.FC = () => {
       return res.accessToken;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      setAuthError(msg);
+      setToastError(msg);
       return '';
     }
   };
 
   const handleOpenGooglePicker = async () => {
-    setAuthError('');
+    setToastError('');
     let token = accessToken;
     if (!token) {
       token = await handleGoogleSignIn();
     }
     if (!token) {
-      setShowConfigModal(true);
       return;
     }
 
     try {
-      setPickerLoadingText('Creating Google Photos Picker session...');
+      setPickerLoadingText('Opening Google Photos...');
       const session = await createPickerSession(token);
       window.open(session.pickerUri, '_blank', 'width=980,height=740');
 
       await pollPickerSessionUntilReady(session.id, token, (msg) => setPickerLoadingText(msg));
-      setPickerLoadingText('Downloading selected photo metadata & generating compact thumbnails...');
+      setPickerLoadingText('Importing your selected photos...');
       const picked = await listPickedMediaItems(session.id, token, (msg) =>
         setPickerLoadingText(msg)
       );
 
-      // If any picked item already exists in Firestore (e.g. refreshing an expired Print link in Admin),
-      // update its fresh 60-minute baseUrl in Firestore!
+      // Update fresh 60-minute baseUrl for any already-marked photos (e.g. Refresh Links in Admin)
       for (const item of picked) {
         const existing = records[item.id];
         if (existing && item.baseUrl) {
-          await upsertPhotoRecord(config, {
+          await upsertPhotoRecord(config, Boolean(user), {
             ...existing,
             baseUrl: item.baseUrl,
             baseUrlExpiresAt: item.baseUrlExpiresAt,
@@ -159,14 +166,15 @@ export const App: React.FC = () => {
         }
       }
 
-      // Add newly picked items to candidate deck (already-processed ones are filtered out by unseenQueue)
+      // Replace sample roll with real picked Google Photos (while keeping any unswiped real items)
       setCandidates((prev) => {
-        const map = new Map(prev.map((p) => [p.id, p]));
+        const realPrev = prev.filter((p) => !p.id.startsWith('sample_'));
+        const map = new Map(realPrev.map((p) => [p.id, p]));
         for (const p of picked) map.set(p.id, p);
         return Array.from(map.values());
       });
     } catch (err) {
-      setAuthError(err instanceof Error ? err.message : String(err));
+      setToastError(err instanceof Error ? err.message : String(err));
     } finally {
       setPickerLoadingText('');
     }
@@ -174,7 +182,7 @@ export const App: React.FC = () => {
 
   const handleSwipe = async (photo: CandidatePhoto, status: PhotoStatus) => {
     const previousRecord = records[photo.id] || null;
-    const actor = user?.email || 'family-member';
+    const actor = user?.email || 'local-device';
 
     const newRecord: PhotoRecord = {
       id: photo.id,
@@ -192,6 +200,8 @@ export const App: React.FC = () => {
       updatedBy: actor,
     };
 
+    // Optimistically update local state immediately so the card deck advances in 0ms
+    setRecords((prev) => ({ ...prev, [photo.id]: newRecord }));
     setUndoStack((prev) => [
       ...prev,
       {
@@ -201,7 +211,11 @@ export const App: React.FC = () => {
       },
     ]);
 
-    await upsertPhotoRecord(config, newRecord);
+    try {
+      await upsertPhotoRecord(config, isAuthenticated, newRecord);
+    } catch (err) {
+      setToastError(err instanceof Error ? err.message : 'Could not save to Firestore');
+    }
   };
 
   const handleUndo = async () => {
@@ -209,22 +223,34 @@ export const App: React.FC = () => {
     const last = undoStack[undoStack.length - 1];
     setUndoStack((prev) => prev.slice(0, -1));
 
-    if (last.previousRecord) {
-      await upsertPhotoRecord(config, last.previousRecord);
-    } else {
-      await removePhotoRecord(config, last.photo.id);
-    }
+    // Optimistic state restore
+    setRecords((prev) => {
+      const next = { ...prev };
+      if (last.previousRecord) {
+        next[last.photo.id] = last.previousRecord;
+      } else {
+        delete next[last.photo.id];
+      }
+      return next;
+    });
 
-    // Ensure the candidate photo is at the front of the candidate list
     setCandidates((prev) => [
       last.photo,
       ...prev.filter((item) => item.id !== last.photo.id),
     ]);
+
+    try {
+      if (last.previousRecord) {
+        await upsertPhotoRecord(config, isAuthenticated, last.previousRecord);
+      } else {
+        await removePhotoRecord(config, isAuthenticated, last.photo.id);
+      }
+    } catch (err) {
+      setToastError(err instanceof Error ? err.message : 'Undo sync failed');
+    }
   };
 
   const handleUnmarkFromAdmin = async (ids: string[]) => {
-    // Capture records before removing so if the user switches back to Swipe on the same session,
-    // they can also re-swipe them if desired
     const restoredCandidates: CandidatePhoto[] = [];
     for (const id of ids) {
       const rec = records[id];
@@ -244,7 +270,11 @@ export const App: React.FC = () => {
       }
     }
 
-    await bulkRemovePhotoRecords(config, ids);
+    setRecords((prev) => {
+      const next = { ...prev };
+      for (const id of ids) delete next[id];
+      return next;
+    });
 
     if (restoredCandidates.length > 0) {
       setCandidates((prev) => {
@@ -253,11 +283,23 @@ export const App: React.FC = () => {
         return [...toAdd, ...prev];
       });
     }
+
+    await bulkRemovePhotoRecords(config, isAuthenticated, ids);
   };
 
   const handleUpdateStatusFromAdmin = async (ids: string[], newStatus: PhotoStatus) => {
     const actor = user?.email || 'family-admin';
-    await bulkUpdatePhotoStatus(config, ids, newStatus, actor);
+    const now = Date.now();
+    setRecords((prev) => {
+      const next = { ...prev };
+      for (const id of ids) {
+        if (next[id]) {
+          next[id] = { ...next[id], status: newStatus, updatedAt: now, updatedBy: actor };
+        }
+      }
+      return next;
+    });
+    await bulkUpdatePhotoStatus(config, isAuthenticated, ids, newStatus, actor);
   };
 
   const handleSaveConfig = (newCfg: RuntimeConfig, manualToken?: string) => {
@@ -270,130 +312,105 @@ export const App: React.FC = () => {
     setShowConfigModal(false);
   };
 
-  const fbConnected = isFirebaseConfigured(config);
-
   return (
-    <div className="app-shell">
-      {/* Top Bar */}
-      <header className="top-nav">
-        <div className="brand-group">
-          <div className="brand-mark">PP</div>
-          <div>
-            <div className="brand-title">PrintPick</div>
-            <div className="brand-subtitle">
-              {fbConnected ? `Firestore: ${config.firebaseProjectId}` : 'Demo Mode (Local Mirror)'}
-              {' • '}
-              <a
-                href="./privacy.html"
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ color: 'var(--text-secondary)', textDecoration: 'underline' }}
-              >
-                Privacy
-              </a>
-            </div>
+    <div className={`app-shell ${mode === 'swipe' ? 'is-swipe-mode' : ''}`}>
+      {/* Sleek Minimal Top Bar */}
+      <header className="top-header">
+        <div className="brand-lockup">
+          <div className="brand-icon">
+            <Camera size={18} />
           </div>
+          <span className="brand-name">PrintPick</span>
         </div>
 
-        {/* Distinct Interface Switcher: Swipe vs Admin */}
-        <nav className="mode-switcher" aria-label="Interface Mode">
+        {/* Desktop Mode Switcher (Hidden on Mobile) */}
+        <nav className="desktop-mode-pills" aria-label="Desktop Mode Switcher">
           <button
-            id="nav-mode-swipe"
             type="button"
-            className={`mode-tab ${mode === 'swipe' ? 'active' : ''}`}
+            className={`mode-pill-btn ${mode === 'swipe' ? 'active' : ''}`}
             onClick={() => switchMode('swipe')}
           >
-            <Smartphone size={15} />
+            <Layers size={15} />
             <span>Swipe</span>
-            <span className="mode-badge">{unseenQueue.length}</span>
+            <span className="count-chip">{unseenQueue.length}</span>
           </button>
 
           <button
-            id="nav-mode-admin"
             type="button"
-            className={`mode-tab ${mode === 'admin' ? 'active' : ''}`}
+            className={`mode-pill-btn ${mode === 'admin' ? 'active' : ''}`}
             onClick={() => switchMode('admin')}
           >
-            <ShieldCheck size={15} />
-            <span>Admin</span>
-            <span className="mode-badge">{counts.print}</span>
+            <LayoutGrid size={15} />
+            <span>Review &amp; Print</span>
+            <span className="count-chip">{counts.print}</span>
           </button>
         </nav>
 
-        {/* Google Photos + Auth + Settings Controls */}
-        <div className="nav-actions">
+        {/* Clean Primary CTA + Account Avatar */}
+        <div className="header-right-actions">
           <button
             id="btn-pick-google-photos"
             type="button"
-            className="btn btn-primary"
+            className="pill-btn pill-btn-ink"
             onClick={handleOpenGooglePicker}
-            title="Select photos from Google Photos"
           >
-            <ImagePlus size={15} />
-            <span className="hide-mobile">Google Photos</span>
+            <Plus size={15} strokeWidth={2.5} />
+            <span>Google Photos</span>
           </button>
 
-          {user ? (
-            <button
-              type="button"
-              className="btn"
-              onClick={() => signOutUser(config)}
-              title={`Signed in as ${user.email} — Click to sign out`}
-            >
-              <LogOut size={15} />
-              <span className="hide-mobile">{user.email?.split('@')[0]}</span>
-            </button>
-          ) : (
-            <button
-              id="btn-google-signin"
-              type="button"
-              className="btn"
-              onClick={handleGoogleSignIn}
-              title="Sign in with Google"
-            >
-              <LogIn size={15} />
-              <span className="hide-mobile">Sign In</span>
-            </button>
-          )}
-
           <button
-            id="btn-open-settings"
+            id="btn-open-account"
             type="button"
-            className="btn"
+            className="avatar-btn"
             onClick={() => setShowConfigModal(true)}
-            title="Configure Firebase & Google Photos API credentials"
+            aria-label="Account and Settings"
           >
-            {fbConnected ? <Database size={15} color="var(--status-print)" /> : <Settings size={15} />}
+            {user?.photoURL ? (
+              <img src={user.photoURL} alt={user.displayName || 'Account'} referrerPolicy="no-referrer" />
+            ) : (
+              <UserIcon size={18} />
+            )}
+            {isAuthenticated && <span className="status-dot-online" />}
           </button>
         </div>
       </header>
 
-      {authError && (
+      {toastError && (
         <div
           style={{
-            background: 'var(--status-delete-bg)',
-            borderBottom: '1px solid var(--status-delete)',
-            color: 'var(--text-primary)',
-            padding: '8px 16px',
+            margin: '8px 14px 0',
+            padding: '10px 14px',
+            borderRadius: '14px',
+            background: 'var(--color-delete-soft)',
+            border: '1px solid rgba(225, 29, 72, 0.25)',
+            color: 'var(--color-delete)',
             fontSize: '12px',
+            fontWeight: 600,
             display: 'flex',
-            justifyContent: 'space-between',
             alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '8px',
+            flexShrink: 0,
           }}
         >
-          <span>{authError}</span>
+          <span>{toastError}</span>
           <button
             type="button"
-            className="btn"
-            style={{ padding: '2px 8px', fontSize: '11px' }}
-            onClick={() => setAuthError('')}
+            onClick={() => setToastError('')}
+            style={{
+              border: 'none',
+              background: 'transparent',
+              color: 'inherit',
+              fontWeight: 800,
+              cursor: 'pointer',
+            }}
           >
-            Dismiss
+            ✕
           </button>
         </div>
       )}
 
-      {/* Render either Mobile-First Swipe Interface or Admin Interface */}
+      {/* Main Content View */}
       {mode === 'swipe' ? (
         <SwipeView
           queue={unseenQueue}
@@ -401,7 +418,8 @@ export const App: React.FC = () => {
           onSwipe={handleSwipe}
           onUndo={handleUndo}
           onOpenGooglePicker={handleOpenGooglePicker}
-          onReloadDemo={loadDemoRoll}
+          onReloadDemo={() => loadDemoRoll(true)}
+          onJumpToAdmin={(tab) => switchMode('admin', tab)}
           counts={counts}
           pickerLoadingText={pickerLoadingText}
         />
@@ -409,16 +427,41 @@ export const App: React.FC = () => {
         <AdminView
           records={records}
           accessToken={accessToken}
+          initialTab={adminInitialTab}
           onUnmark={handleUnmarkFromAdmin}
           onUpdateStatus={handleUpdateStatusFromAdmin}
           onRefreshExpiredViaPicker={handleOpenGooglePicker}
         />
       )}
 
+      {/* Mobile Bottom Tab Dock (< 768px) */}
+      <nav className="mobile-bottom-nav" aria-label="Mobile Navigation">
+        <button
+          type="button"
+          className={`mobile-nav-btn ${mode === 'swipe' ? 'active' : ''}`}
+          onClick={() => switchMode('swipe')}
+        >
+          <Layers size={17} />
+          <span>Swipe ({unseenQueue.length})</span>
+        </button>
+
+        <button
+          type="button"
+          className={`mobile-nav-btn ${mode === 'admin' ? 'active' : ''}`}
+          onClick={() => switchMode('admin')}
+        >
+          <LayoutGrid size={17} />
+          <span>Review &amp; Print ({counts.print})</span>
+        </button>
+      </nav>
+
       {showConfigModal && (
         <ConfigModal
           config={config}
+          user={user}
           accessToken={accessToken}
+          onSignIn={handleGoogleSignIn}
+          onSignOut={() => signOutUser(config)}
           onSaveConfig={handleSaveConfig}
           onClose={() => setShowConfigModal(false)}
         />

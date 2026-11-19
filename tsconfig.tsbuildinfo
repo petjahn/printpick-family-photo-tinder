@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/main.tsx","./src/types.ts","./src/vite-env.d.ts","./src/components/AdminView.tsx","./src/components/ConfigModal.tsx","./src/components/SwipeView.tsx","./src/services/config.ts","./src/services/demoData.ts","./src/services/firebase.ts","./src/services/googlePhotos.ts","./src/services/idbCache.ts","./src/services/zipExport.ts"],"version":"5.6.3"}

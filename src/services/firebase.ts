@@ -93,7 +93,7 @@ export async function signInWithGoogleAndPhotosScope(cfg: RuntimeConfig): Promis
   const auth = getAuth(app);
   const provider = new GoogleAuthProvider();
   provider.addScope('https://www.googleapis.com/auth/photospicker.mediaitems.readonly');
-  provider.setCustomParameters({ prompt: 'consent' });
+  provider.setCustomParameters({ prompt: 'select_account' });
 
   const result = await signInWithPopup(auth, provider);
   const email = (result.user.email || '').toLowerCase();
@@ -138,7 +138,7 @@ export function subscribeAuthState(
   return onAuthStateChanged(auth, cb);
 }
 
-// Local mirror helpers (used when testing in Demo Mode before Firebase keys are configured)
+// Local mirror helpers (used before signing in or when testing Sample Roll)
 function loadLocalMirror(): Record<string, PhotoRecord> {
   try {
     const raw = localStorage.getItem(LOCAL_MIRROR_KEY);
@@ -160,12 +160,13 @@ function saveLocalMirror(records: Record<string, PhotoRecord>): void {
 
 export function subscribeFamilyPhotos(
   cfg: RuntimeConfig,
+  isAuthenticated: boolean,
   onUpdate: (records: Record<string, PhotoRecord>) => void,
   onError?: (err: Error) => void
 ): () => void {
   const { db } = initFirebaseIfConfigured(cfg);
-  if (!db) {
-    // Demo / local mirror mode
+  // Only attach Firestore listener once signed in so sample swiping works offline/pre-login cleanly
+  if (!db || !isAuthenticated) {
     onUpdate(loadLocalMirror());
     localListeners.push(onUpdate);
     return () => {
@@ -192,25 +193,31 @@ export function subscribeFamilyPhotos(
 
 export async function upsertPhotoRecord(
   cfg: RuntimeConfig,
+  isAuthenticated: boolean,
   record: PhotoRecord
 ): Promise<void> {
   const { db } = initFirebaseIfConfigured(cfg);
-  if (!db) {
+  if (!db || !isAuthenticated) {
     const current = loadLocalMirror();
     current[record.id] = record;
     saveLocalMirror(current);
     return;
   }
   const docRef = doc(db, 'workspaces', 'family', 'photos', record.id);
-  await setDoc(docRef, record, { merge: true });
+  // Firestore rejects `undefined` property values, so strip any undefined keys cleanly
+  const sanitized = Object.fromEntries(
+    Object.entries(record).filter(([, v]) => v !== undefined)
+  );
+  await setDoc(docRef, sanitized, { merge: true });
 }
 
 export async function removePhotoRecord(
   cfg: RuntimeConfig,
+  isAuthenticated: boolean,
   photoId: string
 ): Promise<void> {
   const { db } = initFirebaseIfConfigured(cfg);
-  if (!db) {
+  if (!db || !isAuthenticated) {
     const current = loadLocalMirror();
     delete current[photoId];
     saveLocalMirror(current);
@@ -222,11 +229,12 @@ export async function removePhotoRecord(
 
 export async function bulkRemovePhotoRecords(
   cfg: RuntimeConfig,
+  isAuthenticated: boolean,
   photoIds: string[]
 ): Promise<void> {
   if (photoIds.length === 0) return;
   const { db } = initFirebaseIfConfigured(cfg);
-  if (!db) {
+  if (!db || !isAuthenticated) {
     const current = loadLocalMirror();
     for (const id of photoIds) {
       delete current[id];
@@ -243,6 +251,7 @@ export async function bulkRemovePhotoRecords(
 
 export async function bulkUpdatePhotoStatus(
   cfg: RuntimeConfig,
+  isAuthenticated: boolean,
   photoIds: string[],
   status: PhotoStatus,
   updatedBy: string
@@ -250,7 +259,7 @@ export async function bulkUpdatePhotoStatus(
   if (photoIds.length === 0) return;
   const now = Date.now();
   const { db } = initFirebaseIfConfigured(cfg);
-  if (!db) {
+  if (!db || !isAuthenticated) {
     const current = loadLocalMirror();
     for (const id of photoIds) {
       if (current[id]) {

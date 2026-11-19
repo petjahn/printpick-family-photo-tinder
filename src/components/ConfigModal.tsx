@@ -1,20 +1,31 @@
 import React, { useState } from 'react';
-import { X, Save, KeyRound } from 'lucide-react';
+import { User } from 'firebase/auth';
+import { X, Save, LogIn, LogOut, ChevronDown, ChevronUp, ShieldCheck } from 'lucide-react';
 import { RuntimeConfig } from '../types';
+import { isFirebaseConfigured } from '../services/config';
 
 interface ConfigModalProps {
   config: RuntimeConfig;
+  user: User | null;
   accessToken: string;
+  onSignIn: () => Promise<string>;
+  onSignOut: () => Promise<void>;
   onSaveConfig: (newCfg: RuntimeConfig, manualAccessToken?: string) => void;
   onClose: () => void;
 }
 
 export const ConfigModal: React.FC<ConfigModalProps> = ({
   config,
+  user,
   accessToken,
+  onSignIn,
+  onSignOut,
   onSaveConfig,
   onClose,
 }) => {
+  const fbReady = isFirebaseConfigured(config);
+  const [showAdvanced, setShowAdvanced] = useState(!fbReady);
+
   const [firebaseApiKey, setFirebaseApiKey] = useState(config.firebaseApiKey);
   const [firebaseAuthDomain, setFirebaseAuthDomain] = useState(config.firebaseAuthDomain);
   const [firebaseProjectId, setFirebaseProjectId] = useState(config.firebaseProjectId);
@@ -44,144 +55,198 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({
   };
 
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Firebase and Google Photos Configuration">
-      <form className="modal-panel" onSubmit={handleSubmit}>
+    <div
+      className="sheet-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Account and Connection Settings"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <form className="sheet-panel" onSubmit={handleSubmit}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <h2 style={{ fontSize: '18px', fontWeight: 800, letterSpacing: '-0.02em' }}>
+            Family Account &amp; Sync
+          </h2>
+          <button
+            type="button"
+            className="pill-btn"
+            style={{ padding: '6px 10px' }}
+            onClick={onClose}
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Account Card */}
         <div
           style={{
+            background: 'var(--bg-canvas)',
+            borderRadius: 'var(--radius-md)',
+            padding: '14px 16px',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            borderBottom: '1px solid var(--border-subtle)',
-            paddingBottom: '12px',
+            gap: '12px',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <KeyRound size={18} color="var(--accent-blue)" />
-            <h2 style={{ fontSize: '15px', fontWeight: 600 }}>
-              Firebase &amp; Google Photos Setup
-            </h2>
-          </div>
-          <button type="button" className="btn" onClick={onClose} style={{ padding: '4px 8px' }}>
-            <X size={15} />
-          </button>
+          {user ? (
+            <>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: '14px', fontWeight: 700 }}>{user.displayName || 'Signed In'}</div>
+                <div
+                  style={{
+                    fontSize: '12px',
+                    color: 'var(--ink-secondary)',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {user.email}
+                </div>
+                <div
+                  style={{
+                    fontSize: '11px',
+                    color: 'var(--color-print)',
+                    fontWeight: 600,
+                    marginTop: '3px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                  }}
+                >
+                  <ShieldCheck size={13} />
+                  <span>Connected to Firestore ({config.firebaseProjectId})</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="pill-btn"
+                onClick={async () => {
+                  await onSignOut();
+                  onClose();
+                }}
+              >
+                <LogOut size={14} />
+                <span>Sign Out</span>
+              </button>
+            </>
+          ) : (
+            <>
+              <div>
+                <div style={{ fontSize: '14px', fontWeight: 700 }}>Sign in with Google</div>
+                <div style={{ fontSize: '12px', color: 'var(--ink-secondary)', marginTop: '2px' }}>
+                  Sync print picks across devices &amp; pick from Google Photos
+                </div>
+              </div>
+              <button
+                type="button"
+                className="pill-btn pill-btn-ink"
+                onClick={async () => {
+                  const tok = await onSignIn();
+                  if (tok) onClose();
+                }}
+              >
+                <LogIn size={14} />
+                <span>Sign In</span>
+              </button>
+            </>
+          )}
         </div>
 
-        <p style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-          Configure your Firebase project (for real-time shared Firestore sync across devices) and
-          Google Sign-In with the <strong>Google Photos Picker API</strong> enabled. Values are
-          saved locally in your browser or can be set via <code className="font-mono">VITE_*</code>{' '}
-          GitHub Actions secrets.
-        </p>
+        {/* Collapsible Advanced Firebase Configuration */}
+        <button
+          type="button"
+          onClick={() => setShowAdvanced((v) => !v)}
+          style={{
+            background: 'transparent',
+            border: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            fontSize: '13px',
+            fontWeight: 700,
+            color: 'var(--ink-secondary)',
+            cursor: 'pointer',
+            padding: '4px 0',
+          }}
+        >
+          <span>Firebase &amp; Allowlist Settings</span>
+          {showAdvanced ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+        </button>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-          <div className="form-field">
-            <label htmlFor="cfg-fb-api-key">Firebase API Key</label>
-            <input
-              id="cfg-fb-api-key"
-              type="text"
-              className="font-mono"
-              placeholder="AIzaSy..."
-              value={firebaseApiKey}
-              onChange={(e) => setFirebaseApiKey(e.target.value)}
-            />
+        {showAdvanced && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+              <div className="field-group">
+                <label htmlFor="cfg-fb-project-id">Firebase Project ID</label>
+                <input
+                  id="cfg-fb-project-id"
+                  type="text"
+                  placeholder="family-photo-tinder"
+                  value={firebaseProjectId}
+                  onChange={(e) => setFirebaseProjectId(e.target.value)}
+                />
+              </div>
+
+              <div className="field-group">
+                <label htmlFor="cfg-fb-api-key">Firebase API Key</label>
+                <input
+                  id="cfg-fb-api-key"
+                  type="text"
+                  placeholder="AIzaSy..."
+                  value={firebaseApiKey}
+                  onChange={(e) => setFirebaseApiKey(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="field-group">
+              <label htmlFor="cfg-allowed-emails">Allowed Family Emails (comma-separated)</label>
+              <input
+                id="cfg-allowed-emails"
+                type="text"
+                placeholder="you@gmail.com, partner@gmail.com"
+                value={allowedEmailsText}
+                onChange={(e) => setAllowedEmailsText(e.target.value)}
+              />
+            </div>
+
+            <div className="field-group">
+              <label htmlFor="cfg-manual-token">Manual OAuth Token Override (optional)</label>
+              <input
+                id="cfg-manual-token"
+                type="password"
+                placeholder="ya29.a0..."
+                value={manualToken}
+                onChange={(e) => setManualToken(e.target.value)}
+              />
+            </div>
+
+            <button type="submit" className="pill-btn pill-btn-ink" style={{ width: '100%', padding: '11px' }}>
+              <Save size={15} />
+              <span>Save Settings</span>
+            </button>
           </div>
-
-          <div className="form-field">
-            <label htmlFor="cfg-fb-project-id">Firebase Project ID</label>
-            <input
-              id="cfg-fb-project-id"
-              type="text"
-              className="font-mono"
-              placeholder="my-family-photos"
-              value={firebaseProjectId}
-              onChange={(e) => setFirebaseProjectId(e.target.value)}
-            />
-          </div>
-
-          <div className="form-field">
-            <label htmlFor="cfg-fb-auth-domain">Firebase Auth Domain (optional)</label>
-            <input
-              id="cfg-fb-auth-domain"
-              type="text"
-              className="font-mono"
-              placeholder="my-family-photos.firebaseapp.com"
-              value={firebaseAuthDomain}
-              onChange={(e) => setFirebaseAuthDomain(e.target.value)}
-            />
-          </div>
-
-          <div className="form-field">
-            <label htmlFor="cfg-fb-app-id">Firebase App ID (optional)</label>
-            <input
-              id="cfg-fb-app-id"
-              type="text"
-              className="font-mono"
-              placeholder="1:123456:web:abcdef"
-              value={firebaseAppId}
-              onChange={(e) => setFirebaseAppId(e.target.value)}
-            />
-          </div>
-        </div>
-
-        <div className="form-field">
-          <label htmlFor="cfg-allowed-emails">
-            Allowed Family Google Emails (comma-separated, shared database)
-          </label>
-          <input
-            id="cfg-allowed-emails"
-            type="text"
-            className="font-mono"
-            placeholder="parent1@gmail.com, parent2@gmail.com"
-            value={allowedEmailsText}
-            onChange={(e) => setAllowedEmailsText(e.target.value)}
-          />
-        </div>
-
-        <div className="form-field">
-          <label htmlFor="cfg-google-client-id">
-            Google OAuth 2.0 Web Client ID (optional if using Firebase Google Auth popup)
-          </label>
-          <input
-            id="cfg-google-client-id"
-            type="text"
-            className="font-mono"
-            placeholder="123456789-abc.apps.googleusercontent.com"
-            value={googleClientId}
-            onChange={(e) => setGoogleClientId(e.target.value)}
-          />
-        </div>
-
-        <div className="form-field">
-          <label htmlFor="cfg-manual-token">
-            Direct OAuth Access Token Override (optional, scope:{' '}
-            <code className="font-mono">photospicker.mediaitems.readonly</code>)
-          </label>
-          <input
-            id="cfg-manual-token"
-            type="password"
-            className="font-mono"
-            placeholder="ya29.a0..."
-            value={manualToken}
-            onChange={(e) => setManualToken(e.target.value)}
-          />
-        </div>
+        )}
 
         <div
           style={{
             display: 'flex',
-            justifyContent: 'flex-end',
-            gap: '8px',
-            borderTop: '1px solid var(--border-subtle)',
+            justifyContent: 'space-between',
+            fontSize: '12px',
+            color: 'var(--ink-muted)',
+            borderTop: '1px solid var(--border-hairline)',
             paddingTop: '12px',
           }}
         >
-          <button type="button" className="btn" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" className="btn btn-primary">
-            <Save size={15} />
-            <span>Save Configuration</span>
-          </button>
+          <a href="./privacy.html" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit' }}>
+            Privacy Policy
+          </a>
+          <a href="./terms.html" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit' }}>
+            Terms of Service
+          </a>
         </div>
       </form>
     </div>
