@@ -17,7 +17,6 @@ interface SwipeViewProps {
   onSwipe: (photo: CandidatePhoto, status: PhotoStatus) => void;
   onUndo: () => void;
   onOpenGooglePicker: () => void;
-  onReloadDemo: () => void;
   onJumpToAdmin: (tab?: 'print' | 'delete' | 'shown') => void;
   counts: {
     print: number;
@@ -46,7 +45,6 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
   onSwipe,
   onUndo,
   onOpenGooglePicker,
-  onReloadDemo,
   onJumpToAdmin,
   counts,
   pickerLoadingText,
@@ -442,7 +440,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
             </div>
             <div>
               <h2 style={{ fontSize: '19px', fontWeight: 800, letterSpacing: '-0.02em' }}>
-                Batch Complete!
+                {isCloudSynced ? 'No Photos in Queue' : 'Sign In & Pick Photos'}
               </h2>
               <p
                 style={{
@@ -453,14 +451,23 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
                   maxWidth: '300px',
                 }}
               >
-                Every photo you swiped is saved. Load another batch from Google Photos or review your{' '}
-                <strong>{counts.print}</strong> print picks.
+                {isCloudSynced
+                  ? 'Select a batch from Google Photos to start swiping. Your queue stays synced across all your devices.'
+                  : 'Sign in with Google and select photos from Google Photos to start swiping.'}
               </p>
             </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '8px', marginTop: '4px' }}>
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                justifyContent: 'center',
+                gap: '8px',
+                marginTop: '4px',
+              }}
+            >
               <button type="button" className="pill-btn pill-btn-ink" onClick={onOpenGooglePicker}>
                 <ImagePlus size={16} />
-                <span>Pick from Google Photos</span>
+                <span>{isCloudSynced ? 'Pick from Google Photos' : 'Connect Google Photos'}</span>
               </button>
               {counts.print > 0 && (
                 <button
@@ -471,9 +478,6 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
                   <span>Review Print Queue ({counts.print})</span>
                 </button>
               )}
-              <button type="button" className="pill-btn" onClick={onReloadDemo}>
-                <span>Replay Sample Roll</span>
-              </button>
             </div>
           </div>
         ) : (

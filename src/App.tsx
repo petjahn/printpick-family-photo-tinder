@@ -21,7 +21,6 @@ import {
   listPickedMediaItems,
   pollPickerSessionUntilReady,
 } from './services/googlePhotos';
-import { generateDemoCandidates } from './services/demoData';
 import { SwipeView } from './components/SwipeView';
 import { AdminTab, AdminView } from './components/AdminView';
 import { ConfigModal } from './components/ConfigModal';
@@ -38,7 +37,6 @@ export const App: React.FC = () => {
   const [authInitialized, setAuthInitialized] = useState(false);
   const [accessToken, setAccessToken] = useState<string>(() => getStoredAccessToken());
   const [records, setRecords] = useState<Record<string, PhotoRecord>>({});
-  const [sampleCandidates, setSampleCandidates] = useState<CandidatePhoto[]>([]);
   const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [pickerLoadingText, setPickerLoadingText] = useState('');
@@ -73,51 +71,25 @@ export const App: React.FC = () => {
 
   const isAuthenticated = Boolean(user);
 
-  // Subscribe to family photos (Firestore when signed in, local mirror pre-login)
+  // Subscribe to family photos in Cloud Firestore when signed in
   useEffect(() => {
     if (!authInitialized) return;
+    if (!isAuthenticated) {
+      setRecords({});
+      return;
+    }
     const unsubPhotos = subscribeFamilyPhotos(
       config,
-      isAuthenticated,
+      true,
       (map) => setRecords(map),
       (err) => setToastError(err.message)
     );
     return () => unsubPhotos();
   }, [config, isAuthenticated, authInitialized]);
 
-  // Load local sample roll only when not signed in (or if user explicitly clicks Replay Sample Roll)
-  const loadSampleRoll = useCallback(
-    async (forceShowEvenIfAuthenticated = false) => {
-      const demoItems = await generateDemoCandidates();
-      if (forceShowEvenIfAuthenticated && demoItems.length > 0) {
-        const sampleIds = demoItems.map((d) => d.id);
-        setRecords((prev) => {
-          const next = { ...prev };
-          for (const id of sampleIds) delete next[id];
-          return next;
-        });
-        await bulkRemovePhotoRecords(config, false, sampleIds).catch(() => {});
-      }
-      setSampleCandidates(demoItems);
-    },
-    [config]
-  );
-
-  useEffect(() => {
-    if (!authInitialized) return;
-    if (!isAuthenticated) {
-      loadSampleRoll(false);
-    } else {
-      // Clear unauthenticated sample cards when signed in so only real synced Google Photos show
-      setSampleCandidates([]);
-    }
-  }, [authInitialized, isAuthenticated, loadSampleRoll]);
-
-  // Build the active Swipe queue:
-  // 1. All synced Firestore records with status === 'pending' (works seamlessly across all devices!)
-  // 2. Any sample demo cards (when pre-login or explicitly replaying sample roll)
+  // Active Swipe queue: all synced Firestore records with status === 'pending'
   const unseenQueue = useMemo<CandidatePhoto[]>(() => {
-    const syncedPending: CandidatePhoto[] = Object.values(records)
+    return Object.values(records)
       .filter((r) => r.status === 'pending')
       .sort(
         (a, b) =>
@@ -139,10 +111,7 @@ export const App: React.FC = () => {
         baseUrlExpiresAt: rec.baseUrlExpiresAt,
         pickedOrder: rec.pickedOrder,
       }));
-
-    const unswipedSamples = sampleCandidates.filter((s) => !records[s.id]);
-    return [...syncedPending, ...unswipedSamples];
-  }, [records, sampleCandidates]);
+  }, [records]);
 
   const counts = useMemo(() => {
     const list = Object.values(records);
@@ -215,7 +184,6 @@ export const App: React.FC = () => {
         }
         const existing = records[item.id];
         if (existing && existing.status === 'print') {
-          // Refresh expired 60-minute download URL for already-marked Print item
           recordsToSync.push({
             ...existing,
             baseUrl: item.baseUrl,
@@ -225,7 +193,6 @@ export const App: React.FC = () => {
             updatedAt: now,
           });
         } else if (!existing || existing.status === 'pending') {
-          // Save as 'pending' in Firestore so any logged-in device can swipe immediately!
           recordsToSync.push({
             id: item.id,
             filename: item.filename,
@@ -246,13 +213,11 @@ export const App: React.FC = () => {
         }
       }
 
-      // Optimistic local state update before/during chunked cloud commit
       setRecords((prev) => {
         const next = { ...prev };
         for (const r of recordsToSync) next[r.id] = r;
         return next;
       });
-      setSampleCandidates([]);
 
       await bulkUpsertPhotoRecords(
         config,
@@ -271,10 +236,7 @@ export const App: React.FC = () => {
 
   const handleSwipe = async (photo: CandidatePhoto, status: PhotoStatus) => {
     const previousRecord = records[photo.id] || null;
-    const actor = user?.email || 'local-device';
-    const isSample = photo.id.startsWith('sample_');
-
-    // Keep crisp previewDataUrl for 'print' & 'pending'; free it on 'shown'/'delete'
+    const actor = user?.email || 'family-member';
     const keepPreview = status === 'print' || status === 'pending';
 
     const newRecord: PhotoRecord = {
@@ -297,7 +259,6 @@ export const App: React.FC = () => {
       updatedBy: actor,
     };
 
-    // Optimistic 0ms update
     setRecords((prev) => ({ ...prev, [photo.id]: newRecord }));
     setUndoStack((prev) => [
       ...prev,
@@ -309,7 +270,7 @@ export const App: React.FC = () => {
     ]);
 
     try {
-      await upsertPhotoRecord(config, isAuthenticated && !isSample, newRecord);
+      await upsertPhotoRecord(config, isAuthenticated, newRecord);
     } catch (err) {
       setToastError(err instanceof Error ? err.message : 'Could not sync swipe to Firestore');
     }
@@ -319,7 +280,6 @@ export const App: React.FC = () => {
     if (undoStack.length === 0) return;
     const last = undoStack[undoStack.length - 1];
     setUndoStack((prev) => prev.slice(0, -1));
-    const isSample = last.photo.id.startsWith('sample_');
 
     const restoredRecord: PhotoRecord | null = last.previousRecord
       ? {
@@ -341,9 +301,9 @@ export const App: React.FC = () => {
 
     try {
       if (restoredRecord) {
-        await upsertPhotoRecord(config, isAuthenticated && !isSample, restoredRecord);
+        await upsertPhotoRecord(config, isAuthenticated, restoredRecord);
       } else {
-        await removePhotoRecord(config, isAuthenticated && !isSample, last.photo.id);
+        await removePhotoRecord(config, isAuthenticated, last.photo.id);
       }
     } catch (err) {
       setToastError(err instanceof Error ? err.message : 'Undo sync failed');
@@ -351,16 +311,12 @@ export const App: React.FC = () => {
   };
 
   const handleUnmarkFromAdmin = async (ids: string[]) => {
-    // Setting status back to 'pending' puts unmarked photos right back into the synced Swipe deck across ALL devices!
     const actor = user?.email || 'family-admin';
     const now = Date.now();
 
-    const realIds = ids.filter((id) => !id.startsWith('sample_'));
-    const sampleIds = ids.filter((id) => id.startsWith('sample_'));
-
     setRecords((prev) => {
       const next = { ...prev };
-      for (const id of realIds) {
+      for (const id of ids) {
         if (next[id]) {
           next[id] = {
             ...next[id],
@@ -371,18 +327,10 @@ export const App: React.FC = () => {
           };
         }
       }
-      for (const id of sampleIds) {
-        delete next[id];
-      }
       return next;
     });
 
-    if (realIds.length > 0) {
-      await bulkUpdatePhotoStatus(config, isAuthenticated, realIds, 'pending', actor);
-    }
-    if (sampleIds.length > 0) {
-      await bulkRemovePhotoRecords(config, false, sampleIds);
-    }
+    await bulkUpdatePhotoStatus(config, isAuthenticated, ids, 'pending', actor);
   };
 
   const handleUpdateStatusFromAdmin = async (ids: string[], newStatus: PhotoStatus) => {
@@ -534,7 +482,6 @@ export const App: React.FC = () => {
           onSwipe={handleSwipe}
           onUndo={handleUndo}
           onOpenGooglePicker={handleOpenGooglePicker}
-          onReloadDemo={() => loadSampleRoll(true)}
           onJumpToAdmin={(tab) => switchMode('admin', tab)}
           counts={counts}
           pickerLoadingText={pickerLoadingText}
