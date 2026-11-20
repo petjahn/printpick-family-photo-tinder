@@ -274,15 +274,15 @@ textarea {
 }
 
 /* ==========================================================================
-   MOBILE-FIRST SWIPE VIEW
+   RESPONSIVE SWIPE VIEW (MOBILE, IPAD & DESKTOP)
    ========================================================================== */
 .swipe-screen {
   flex: 1;
   min-height: 0;
   width: 100%;
-  max-width: 470px;
+  max-width: 480px;
   margin: 0 auto;
-  padding: 8px 14px 10px;
+  padding: 6px 12px 8px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -290,11 +290,21 @@ textarea {
   -webkit-user-select: none;
 }
 
+@media (min-width: 600px) {
+  .swipe-screen {
+    max-width: min(95vw, 1180px);
+    padding: 10px 24px 16px;
+  }
+}
+
 .swipe-meta-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  width: 100%;
+  max-width: 880px;
+  margin: 0 auto;
   padding: 2px 4px 8px;
   flex-shrink: 0;
 }
@@ -339,7 +349,6 @@ textarea {
 
 .deck-card {
   position: absolute;
-  inset: 0;
   border-radius: var(--radius-xl);
   background: #10131a;
   box-shadow: var(--shadow-card);
@@ -348,18 +357,29 @@ textarea {
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
-  will-change: transform, opacity;
+  will-change: transform, opacity, width, height;
+}
+
+.deck-card-ambient {
+  position: absolute;
+  inset: -24px;
+  width: calc(100% + 48px);
+  height: calc(100% + 48px);
+  object-fit: cover;
+  filter: blur(26px) brightness(0.55) saturate(1.2);
+  pointer-events: none;
+  z-index: 0;
 }
 
 .deck-card-behind-2 {
-  transform: scale(0.91) translateY(18px);
-  opacity: 0.5;
+  transform: scale(0.92) translateY(16px);
+  opacity: 0.48;
   pointer-events: none;
   z-index: 1;
 }
 
 .deck-card-behind-1 {
-  transform: scale(0.955) translateY(9px);
+  transform: scale(0.96) translateY(8px);
   opacity: 0.88;
   pointer-events: none;
   z-index: 2;
@@ -376,6 +396,8 @@ textarea {
 }
 
 .deck-card-img {
+  position: relative;
+  z-index: 1;
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -385,7 +407,6 @@ textarea {
 
 .deck-card-img.fit-contain {
   object-fit: contain;
-  background: #0d1017;
 }
 
 /* Subtle Top & Bottom Scrims on Card */

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   RotateCcw,
   Heart,
@@ -61,7 +61,10 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
   const thirdCard = queue[2] || null;
 
   const [fitContain, setFitContain] = useState(false);
+  const [stageSize, setStageSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+  const [naturalRatios, setNaturalRatios] = useState<Record<string, number>>({});
 
+  const stageRef = useRef<HTMLDivElement | null>(null);
   const activeCardRef = useRef<HTMLDivElement | null>(null);
   const nextCardRef = useRef<HTMLDivElement | null>(null);
   const badgePrintRef = useRef<HTMLDivElement | null>(null);
@@ -81,6 +84,83 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
     animatingOut: false,
   });
 
+  // Measure exact available stage bounds for responsive Desktop, iPad, and Mobile fitting
+  useLayoutEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+
+    const updateSize = () => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        setStageSize({ w: Math.floor(rect.width), h: Math.floor(rect.height) });
+      }
+    };
+
+    updateSize();
+    const ro = new ResizeObserver(() => updateSize());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const getPhotoRatio = useCallback(
+    (photo: CandidatePhoto): number => {
+      if (naturalRatios[photo.id]) return naturalRatios[photo.id];
+      if (photo.width > 0 && photo.height > 0) return photo.width / photo.height;
+      return 3 / 4;
+    },
+    [naturalRatios]
+  );
+
+  // Compute exact card dimensions:
+  // - On iPad & Desktop (stageW >= 580): fit the card frame tightly to the photo's true aspect ratio
+  //   within (stageW, stageH) so both portrait and landscape photos fill the page cleanly with zero cropping!
+  // - On Mobile (stageW < 580): fill the mobile card viewport, using ambient backdrop for landscape photos.
+  const getCardFrameStyle = useCallback(
+    (photo: CandidatePhoto): React.CSSProperties => {
+      const { w: stageW, h: stageH } = stageSize;
+      if (!stageW || !stageH) {
+        return { width: '100%', height: '100%' };
+      }
+
+      const isTabletOrDesktop = stageW >= 580;
+      if (!isTabletOrDesktop) {
+        return {
+          width: `${stageW}px`,
+          height: `${stageH}px`,
+        };
+      }
+
+      const ratio = getPhotoRatio(photo);
+      let cardW = stageH * ratio;
+      let cardH = stageH;
+      if (cardW > stageW) {
+        cardW = stageW;
+        cardH = stageW / ratio;
+      }
+
+      return {
+        width: `${Math.round(cardW)}px`,
+        height: `${Math.round(cardH)}px`,
+      };
+    },
+    [stageSize, getPhotoRatio]
+  );
+
+  const shouldUseContainWithAmbient = useCallback(
+    (photo: CandidatePhoto): boolean => {
+      if (fitContain) return true;
+      const isTabletOrDesktop = stageSize.w >= 580;
+      if (isTabletOrDesktop) {
+        // On Desktop/iPad the card frame itself matches the photo's aspect ratio, so contain shows 100% cleanly
+        return true;
+      }
+      // On Mobile phones, use contain + ambient backdrop automatically for landscape photos so edges aren't cut off
+      const ratio = getPhotoRatio(photo);
+      return ratio > 1.02;
+    },
+    [fitContain, stageSize.w, getPhotoRatio]
+  );
+
   // Reset card DOM transforms whenever the top card changes
   useEffect(() => {
     gestureRef.current.active = false;
@@ -94,7 +174,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
     }
     if (nextCardRef.current) {
       nextCardRef.current.style.transition = 'none';
-      nextCardRef.current.style.transform = 'scale(0.955) translateY(9px)';
+      nextCardRef.current.style.transform = 'scale(0.96) translateY(8px)';
       nextCardRef.current.style.opacity = '0.88';
     }
     if (badgePrintRef.current) badgePrintRef.current.style.opacity = '0';
@@ -107,13 +187,13 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
     const card = activeCardRef.current;
     if (!card) return;
 
-    const rot = dx * 0.05;
+    const rot = dx * 0.045;
     card.style.transform = `translate3d(${dx}px, ${dy}px, 0px) rotate(${rot}deg)`;
 
     const dist = Math.min(1, Math.hypot(dx, dy) / 120);
     if (nextCardRef.current) {
-      const scale = 0.955 + 0.045 * dist;
-      const ty = 9 * (1 - dist);
+      const scale = 0.96 + 0.04 * dist;
+      const ty = 8 * (1 - dist);
       nextCardRef.current.style.transform = `scale(${scale}) translateY(${ty}px)`;
       nextCardRef.current.style.opacity = `${0.88 + 0.12 * dist}`;
     }
@@ -162,13 +242,13 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
         card.style.transition =
           'transform 0.24s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.22s ease';
         if (status === 'print') {
-          card.style.transform = `translate3d(${vw * 1.15}px, 30px, 0px) rotate(18deg)`;
+          card.style.transform = `translate3d(${vw * 0.95}px, 30px, 0px) rotate(16deg)`;
           if (badgePrintRef.current) badgePrintRef.current.style.opacity = '1';
         } else if (status === 'shown') {
-          card.style.transform = `translate3d(${-vw * 1.15}px, 30px, 0px) rotate(-18deg)`;
+          card.style.transform = `translate3d(${-vw * 0.95}px, 30px, 0px) rotate(-16deg)`;
           if (badgeSkipRef.current) badgeSkipRef.current.style.opacity = '1';
         } else {
-          card.style.transform = `translate3d(0px, ${-vh * 1.05}px, 0px) rotate(0deg)`;
+          card.style.transform = `translate3d(0px, ${-vh * 0.95}px, 0px) rotate(0deg)`;
           if (badgeDeleteRef.current) badgeDeleteRef.current.style.opacity = '1';
         }
         card.style.opacity = '0';
@@ -196,7 +276,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
     }
     if (nextCardRef.current) {
       nextCardRef.current.style.transition = 'transform 0.25s ease, opacity 0.25s ease';
-      nextCardRef.current.style.transform = 'scale(0.955) translateY(9px)';
+      nextCardRef.current.style.transform = 'scale(0.96) translateY(8px)';
       nextCardRef.current.style.opacity = '0.88';
     }
     if (badgePrintRef.current) badgePrintRef.current.style.opacity = '0';
@@ -205,7 +285,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
     if (tintRef.current) tintRef.current.style.opacity = '0';
   }, []);
 
-  // Unified Gesture Lifecycle (works identically for iOS Touch, Android Touch, and Mouse/Trackpad)
+  // Unified Gesture Lifecycle (iOS Touch, iPad Touch, Android Touch, and Desktop Mouse)
   useEffect(() => {
     const card = activeCardRef.current;
     if (!card || !current) return;
@@ -255,15 +335,9 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
       const absX = Math.abs(dx);
       const absY = Math.abs(dy);
 
-      // Detect upward swipe (distance >= 60px OR brisk upward flick >= 0.38 px/ms)
-      const isUpSwipe =
-        absY > absX * 0.8 && (dy < -60 || (dy < -25 && g.vy < -0.38));
-
-      // Detect right swipe (Print)
+      const isUpSwipe = absY > absX * 0.8 && (dy < -60 || (dy < -25 && g.vy < -0.38));
       const isRightSwipe =
         !isUpSwipe && absX >= absY * 0.7 && (dx > 60 || (dx > 25 && g.vx > 0.38));
-
-      // Detect left swipe (Ignore / Shown)
       const isLeftSwipe =
         !isUpSwipe && absX >= absY * 0.7 && (dx < -60 || (dx < -25 && g.vx < -0.38));
 
@@ -278,7 +352,6 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
       }
     };
 
-    // Touch listeners (non-passive touchmove stops iOS Safari & Android Chrome from hijacking swipes)
     const onTouchStart = (e: TouchEvent) => {
       if ((e.target as HTMLElement)?.closest('button')) return;
       if (e.touches.length !== 1) return;
@@ -295,7 +368,6 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
       endGesture();
     };
 
-    // Mouse listeners for desktop/laptop dragging
     const onMouseDown = (e: MouseEvent) => {
       if (e.button !== 0) return;
       if ((e.target as HTMLElement)?.closest('button')) return;
@@ -333,7 +405,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
     };
   }, [current, applyDragVisuals, commitFlyOut, springBack]);
 
-  // Keyboard shortcuts for desktop/iPad
+  // Keyboard shortcuts for Desktop & iPad keyboards
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
@@ -356,6 +428,16 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [commitFlyOut, canUndo, onUndo]);
+
+  const handleImgLoad = (photoId: string, e: React.SyntheticEvent<HTMLImageElement>) => {
+    const img = e.currentTarget;
+    if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+      const r = img.naturalWidth / img.naturalHeight;
+      setNaturalRatios((prev) => (prev[photoId] === r ? prev : { ...prev, [photoId]: r }));
+    }
+  };
+
+  const isTabletOrDesktop = stageSize.w >= 580;
 
   return (
     <main className="swipe-screen" aria-label="Swipe Photo Deck">
@@ -391,8 +473,8 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
         </div>
       </div>
 
-      {/* 3D Card Stack Stage */}
-      <div className="deck-stage">
+      {/* Responsive 3D Card Stack Stage */}
+      <div ref={stageRef} className="deck-stage">
         {pickerLoadingText ? (
           <div
             style={{
@@ -402,6 +484,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
               textAlign: 'center',
               boxShadow: 'var(--shadow-elevated)',
               width: '100%',
+              maxWidth: '420px',
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
@@ -431,11 +514,12 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
             style={{
               background: 'var(--bg-surface)',
               borderRadius: 'var(--radius-xl)',
-              padding: '40px 24px',
+              padding: '40px 28px',
               textAlign: 'center',
               boxShadow: 'var(--shadow-elevated)',
               border: '1px solid var(--border-hairline)',
               width: '100%',
+              maxWidth: '420px',
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
@@ -466,7 +550,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
                   color: 'var(--ink-secondary)',
                   marginTop: '6px',
                   lineHeight: 1.5,
-                  maxWidth: '300px',
+                  maxWidth: '310px',
                 }}
               >
                 {isCloudSynced
@@ -513,7 +597,11 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
           <>
             {/* 3rd Card in Stack */}
             {thirdCard && (
-              <div className="deck-card deck-card-behind-2" aria-hidden="true">
+              <div
+                className="deck-card deck-card-behind-2"
+                style={getCardFrameStyle(thirdCard)}
+                aria-hidden="true"
+              >
                 <img
                   src={thirdCard.displayUrl || thirdCard.thumbDataUrl}
                   alt=""
@@ -522,19 +610,30 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
               </div>
             )}
 
-            {/* 2nd Card in Stack (scales up dynamically as top card is dragged) */}
+            {/* 2nd Card in Stack */}
             {secondCard && (
-              <div ref={nextCardRef} className="deck-card deck-card-behind-1" aria-hidden="true">
+              <div
+                ref={nextCardRef}
+                className="deck-card deck-card-behind-1"
+                style={getCardFrameStyle(secondCard)}
+                aria-hidden="true"
+              >
                 <img
                   src={secondCard.displayUrl || secondCard.thumbDataUrl}
                   alt=""
                   className="deck-card-img"
+                  onLoad={(e) => handleImgLoad(secondCard.id, e)}
                 />
               </div>
             )}
 
             {/* Top Interactive Swipe Card */}
-            <div ref={activeCardRef} key={current.id} className="deck-card deck-card-active">
+            <div
+              ref={activeCardRef}
+              key={current.id}
+              className="deck-card deck-card-active"
+              style={getCardFrameStyle(current)}
+            >
               <div ref={tintRef} className="gesture-tint" />
 
               {/* Live Swipe Badges */}
@@ -551,27 +650,42 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
                 <span>DELETE</span>
               </div>
 
-              {/* Fit / Fill Toggle */}
-              <button
-                type="button"
-                className="card-fit-toggle"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setFitContain((v) => !v);
-                }}
-                title={fitContain ? 'Fill card' : 'Show uncropped photo'}
-              >
-                {fitContain ? <Maximize2 size={16} /> : <Minimize2 size={16} />}
-              </button>
+              {/* Fit / Fill Toggle on Mobile */}
+              {!isTabletOrDesktop && (
+                <button
+                  type="button"
+                  className="card-fit-toggle"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setFitContain((v) => !v);
+                  }}
+                  title={fitContain ? 'Fill card' : 'Show uncropped photo'}
+                >
+                  {fitContain ? <Maximize2 size={16} /> : <Minimize2 size={16} />}
+                </button>
+              )}
+
+              {/* Blurred Ambient Backdrop (when fitting landscape photo on mobile) */}
+              {!isTabletOrDesktop && shouldUseContainWithAmbient(current) && (
+                <img
+                  src={current.displayUrl || current.thumbDataUrl}
+                  alt=""
+                  aria-hidden="true"
+                  className="deck-card-ambient"
+                />
+              )}
 
               <img
                 src={current.displayUrl || current.thumbDataUrl}
                 alt={current.filename}
-                className={`deck-card-img ${fitContain ? 'fit-contain' : ''}`}
+                className={`deck-card-img ${
+                  shouldUseContainWithAmbient(current) ? 'fit-contain' : ''
+                }`}
                 draggable={false}
+                onLoad={(e) => handleImgLoad(current.id, e)}
               />
 
-              {/* Clean Human-Readable Photo Caption Scrim */}
+              {/* Clean Photo Caption Scrim */}
               <div className="card-bottom-scrim">
                 <div>
                   <div className="card-date-title">
@@ -586,8 +700,10 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
                     {new Date(current.createTime).toLocaleTimeString([], {
                       hour: 'numeric',
                       minute: '2-digit',
-                    })}{' '}
-                    • Swipe left to skip, up to delete, right to print
+                    })}
+                    {isTabletOrDesktop
+                      ? ' • Drag or press ← Skip • ↑ Delete • → Print'
+                      : ' • Swipe left to skip, up to delete, right to print'}
                   </div>
                 </div>
               </div>

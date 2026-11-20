@@ -21,6 +21,7 @@ import {
   listPickedMediaItems,
   pollPickerSessionUntilReady,
 } from './services/googlePhotos';
+import { getCachedFullResBlob } from './services/idbCache';
 import { SwipeView } from './components/SwipeView';
 import { AdminTab, AdminView } from './components/AdminView';
 import { ConfigModal } from './components/ConfigModal';
@@ -42,6 +43,7 @@ export const App: React.FC = () => {
   const [pickerLoadingText, setPickerLoadingText] = useState('');
   const [activePickerUrl, setActivePickerUrl] = useState('');
   const [toastError, setToastError] = useState('');
+  const [hydratedBlobVersion, setHydratedBlobVersion] = useState(0);
 
   const localBlobUrlsRef = useRef<Record<string, string>>({});
 
@@ -87,8 +89,37 @@ export const App: React.FC = () => {
     return () => unsubPhotos();
   }, [config, isAuthenticated, authInitialized]);
 
+  // Hydrate 1920px HD cached blobs from IndexedDB for top pending items on page reload
+  useEffect(() => {
+    let cancelled = false;
+    const pendingTop = Object.values(records)
+      .filter((r) => r.status === 'pending' && !localBlobUrlsRef.current[r.id])
+      .slice(0, 6);
+
+    if (pendingTop.length === 0) return;
+
+    (async () => {
+      let added = false;
+      for (const rec of pendingTop) {
+        const blob = await getCachedFullResBlob(rec.id);
+        if (blob && !cancelled && !localBlobUrlsRef.current[rec.id]) {
+          localBlobUrlsRef.current[rec.id] = URL.createObjectURL(blob);
+          added = true;
+        }
+      }
+      if (added && !cancelled) {
+        setHydratedBlobVersion((v) => v + 1);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [records]);
+
   // Active Swipe queue: all synced Firestore records with status === 'pending'
   const unseenQueue = useMemo<CandidatePhoto[]>(() => {
+    void hydratedBlobVersion;
     return Object.values(records)
       .filter((r) => r.status === 'pending')
       .sort(
@@ -111,7 +142,7 @@ export const App: React.FC = () => {
         baseUrlExpiresAt: rec.baseUrlExpiresAt,
         pickedOrder: rec.pickedOrder,
       }));
-  }, [records]);
+  }, [records, hydratedBlobVersion]);
 
   const counts = useMemo(() => {
     const list = Object.values(records);

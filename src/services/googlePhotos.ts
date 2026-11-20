@@ -171,7 +171,7 @@ async function fetchDisplayPreviewAndThumb(
   width: number;
   height: number;
 }> {
-  const res = await fetch(`${baseUrl}=w1280-h1280`, {
+  const res = await fetch(`${baseUrl}=w1920-h1920`, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
     },
@@ -190,8 +190,8 @@ async function fetchDisplayPreviewAndThumb(
     displayUrl,
     previewDataUrl,
     thumbDataUrl,
-    width: metaW || naturalW || 1280,
-    height: metaH || naturalH || 960,
+    width: metaW || naturalW || 1600,
+    height: metaH || naturalH || 1200,
   };
 }
 
@@ -229,11 +229,11 @@ function createSyncPreviewAndCompactThumb(imageSrc: string): Promise<{
       // 1. Compact Admin grid thumbnail (~8-12 KB)
       const thumbDataUrl = encodeResizedDataUrl(img, 220, 0.65);
 
-      // 2. Crisp mobile swipe preview (~55-80 KB WebP) synced to Firestore for other devices
-      let previewDataUrl = encodeResizedDataUrl(img, 820, 0.72);
+      // 2. Crisp 1080px WebP preview synced to Firestore for sharp iPad, Desktop & Mobile viewing
+      let previewDataUrl = encodeResizedDataUrl(img, 1080, 0.74);
       // Safety guard: ensure preview string stays well below Firestore's 1 MB document limit
-      if (previewDataUrl.length > 320_000) {
-        previewDataUrl = encodeResizedDataUrl(img, 640, 0.6);
+      if (previewDataUrl.length > 360_000) {
+        previewDataUrl = encodeResizedDataUrl(img, 780, 0.64);
       }
 
       resolve({ previewDataUrl, thumbDataUrl, naturalW: nw, naturalH: nh });
