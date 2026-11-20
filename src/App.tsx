@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { User } from 'firebase/auth';
 import { Layers, LayoutGrid, Plus, User as UserIcon, Camera } from 'lucide-react';
 import { CandidatePhoto, PhotoRecord, PhotoStatus, RuntimeConfig, UndoAction } from './types';
@@ -6,6 +6,7 @@ import { isFirebaseConfigured, loadRuntimeConfig, saveRuntimeConfig } from './se
 import {
   bulkRemovePhotoRecords,
   bulkUpdatePhotoStatus,
+  bulkUpsertPhotoRecords,
   getStoredAccessToken,
   removePhotoRecord,
   signInWithGoogleAndPhotosScope,
@@ -34,13 +35,17 @@ export const App: React.FC = () => {
   const [adminInitialTab, setAdminInitialTab] = useState<AdminTab>('print');
   const [config, setConfig] = useState<RuntimeConfig>(() => loadRuntimeConfig());
   const [user, setUser] = useState<User | null>(null);
+  const [authInitialized, setAuthInitialized] = useState(false);
   const [accessToken, setAccessToken] = useState<string>(() => getStoredAccessToken());
   const [records, setRecords] = useState<Record<string, PhotoRecord>>({});
-  const [candidates, setCandidates] = useState<CandidatePhoto[]>([]);
+  const [sampleCandidates, setSampleCandidates] = useState<CandidatePhoto[]>([]);
   const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [pickerLoadingText, setPickerLoadingText] = useState('');
   const [toastError, setToastError] = useState('');
+
+  // High-res in-memory blob URLs for the current session on the device where photos were picked
+  const localBlobUrlsRef = useRef<Record<string, string>>({});
 
   const switchMode = useCallback((nextMode: AppMode, tab?: AdminTab) => {
     if (tab) setAdminInitialTab(tab);
@@ -59,14 +64,18 @@ export const App: React.FC = () => {
 
   // Auth listener
   useEffect(() => {
-    const unsubAuth = subscribeAuthState(config, (u) => setUser(u));
+    const unsubAuth = subscribeAuthState(config, (u) => {
+      setUser(u);
+      setAuthInitialized(true);
+    });
     return () => unsubAuth();
   }, [config]);
 
   const isAuthenticated = Boolean(user);
 
-  // Subscribe to family photos (Firestore when authenticated, local mirror before sign-in)
+  // Subscribe to family photos (Firestore when signed in, local mirror pre-login)
   useEffect(() => {
+    if (!authInitialized) return;
     const unsubPhotos = subscribeFamilyPhotos(
       config,
       isAuthenticated,
@@ -74,34 +83,66 @@ export const App: React.FC = () => {
       (err) => setToastError(err.message)
     );
     return () => unsubPhotos();
-  }, [config, isAuthenticated]);
+  }, [config, isAuthenticated, authInitialized]);
 
-  const loadDemoRoll = useCallback(async (resetSwipedSamples = false) => {
-    const demoItems = await generateDemoCandidates();
-    if (resetSwipedSamples && demoItems.length > 0) {
-      const sampleIds = demoItems.map((d) => d.id);
-      setRecords((prev) => {
-        const next = { ...prev };
-        for (const id of sampleIds) delete next[id];
-        return next;
-      });
-      await bulkRemovePhotoRecords(config, isAuthenticated, sampleIds).catch(() => {});
-    }
-    setCandidates((prev) => {
-      const nonSample = prev.filter((p) => !p.id.startsWith('sample_'));
-      return [...demoItems, ...nonSample];
-    });
-  }, [config, isAuthenticated]);
+  // Load local sample roll only when not signed in (or if user explicitly clicks Replay Sample Roll)
+  const loadSampleRoll = useCallback(
+    async (forceShowEvenIfAuthenticated = false) => {
+      const demoItems = await generateDemoCandidates();
+      if (forceShowEvenIfAuthenticated && demoItems.length > 0) {
+        const sampleIds = demoItems.map((d) => d.id);
+        setRecords((prev) => {
+          const next = { ...prev };
+          for (const id of sampleIds) delete next[id];
+          return next;
+        });
+        await bulkRemovePhotoRecords(config, false, sampleIds).catch(() => {});
+      }
+      setSampleCandidates(demoItems);
+    },
+    [config]
+  );
 
   useEffect(() => {
-    loadDemoRoll(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!authInitialized) return;
+    if (!isAuthenticated) {
+      loadSampleRoll(false);
+    } else {
+      // Clear unauthenticated sample cards when signed in so only real synced Google Photos show
+      setSampleCandidates([]);
+    }
+  }, [authInitialized, isAuthenticated, loadSampleRoll]);
 
-  const unseenQueue = useMemo(
-    () => candidates.filter((c) => !records[c.id]),
-    [candidates, records]
-  );
+  // Build the active Swipe queue:
+  // 1. All synced Firestore records with status === 'pending' (works seamlessly across all devices!)
+  // 2. Any sample demo cards (when pre-login or explicitly replaying sample roll)
+  const unseenQueue = useMemo<CandidatePhoto[]>(() => {
+    const syncedPending: CandidatePhoto[] = Object.values(records)
+      .filter((r) => r.status === 'pending')
+      .sort(
+        (a, b) =>
+          (a.pickedOrder || a.updatedAt || 0) - (b.pickedOrder || b.updatedAt || 0) ||
+          a.createTime.localeCompare(b.createTime)
+      )
+      .map((rec) => ({
+        id: rec.id,
+        filename: rec.filename,
+        mimeType: rec.mimeType,
+        createTime: rec.createTime,
+        width: rec.width,
+        height: rec.height,
+        thumbDataUrl: rec.thumbDataUrl,
+        previewDataUrl: rec.previewDataUrl || undefined,
+        displayUrl:
+          localBlobUrlsRef.current[rec.id] || rec.previewDataUrl || rec.thumbDataUrl,
+        baseUrl: rec.baseUrl,
+        baseUrlExpiresAt: rec.baseUrlExpiresAt,
+        pickedOrder: rec.pickedOrder,
+      }));
+
+    const unswipedSamples = sampleCandidates.filter((s) => !records[s.id]);
+    return [...syncedPending, ...unswipedSamples];
+  }, [records, sampleCandidates]);
 
   const counts = useMemo(() => {
     const list = Object.values(records);
@@ -109,6 +150,7 @@ export const App: React.FC = () => {
       print: list.filter((r) => r.status === 'print').length,
       delete: list.filter((r) => r.status === 'delete').length,
       shown: list.filter((r) => r.status === 'shown' || r.status === 'printed').length,
+      pending: list.filter((r) => r.status === 'pending').length,
     };
   }, [records]);
 
@@ -148,31 +190,78 @@ export const App: React.FC = () => {
       window.open(session.pickerUri, '_blank', 'width=980,height=740');
 
       await pollPickerSessionUntilReady(session.id, token, (msg) => setPickerLoadingText(msg));
-      setPickerLoadingText('Importing your selected photos...');
-      const picked = await listPickedMediaItems(session.id, token, (msg) =>
+
+      const existingStatusById: Record<string, string> = {};
+      for (const [id, rec] of Object.entries(records)) {
+        existingStatusById[id] = rec.status;
+      }
+
+      const picked = await listPickedMediaItems(session.id, token, existingStatusById, (msg) =>
         setPickerLoadingText(msg)
       );
 
-      // Update fresh 60-minute baseUrl for any already-marked photos (e.g. Refresh Links in Admin)
+      if (picked.length === 0) {
+        setPickerLoadingText('');
+        return;
+      }
+
+      const actor = user?.email || 'family-member';
+      const now = Date.now();
+      const recordsToSync: PhotoRecord[] = [];
+
       for (const item of picked) {
+        if (item.displayUrl) {
+          localBlobUrlsRef.current[item.id] = item.displayUrl;
+        }
         const existing = records[item.id];
-        if (existing && item.baseUrl) {
-          await upsertPhotoRecord(config, Boolean(user), {
+        if (existing && existing.status === 'print') {
+          // Refresh expired 60-minute download URL for already-marked Print item
+          recordsToSync.push({
             ...existing,
             baseUrl: item.baseUrl,
             baseUrlExpiresAt: item.baseUrlExpiresAt,
+            previewDataUrl: item.previewDataUrl || existing.previewDataUrl || null,
             thumbDataUrl: item.thumbDataUrl || existing.thumbDataUrl,
+            updatedAt: now,
+          });
+        } else if (!existing || existing.status === 'pending') {
+          // Save as 'pending' in Firestore so any logged-in device can swipe immediately!
+          recordsToSync.push({
+            id: item.id,
+            filename: item.filename,
+            mimeType: item.mimeType,
+            createTime: item.createTime,
+            width: item.width,
+            height: item.height,
+            status: 'pending',
+            previousStatus: null,
+            thumbDataUrl: item.thumbDataUrl,
+            previewDataUrl: item.previewDataUrl || null,
+            baseUrl: item.baseUrl,
+            baseUrlExpiresAt: item.baseUrlExpiresAt,
+            pickedOrder: item.pickedOrder || now,
+            updatedAt: now,
+            updatedBy: actor,
           });
         }
       }
 
-      // Replace sample roll with real picked Google Photos (while keeping any unswiped real items)
-      setCandidates((prev) => {
-        const realPrev = prev.filter((p) => !p.id.startsWith('sample_'));
-        const map = new Map(realPrev.map((p) => [p.id, p]));
-        for (const p of picked) map.set(p.id, p);
-        return Array.from(map.values());
+      // Optimistic local state update before/during chunked cloud commit
+      setRecords((prev) => {
+        const next = { ...prev };
+        for (const r of recordsToSync) next[r.id] = r;
+        return next;
       });
+      setSampleCandidates([]);
+
+      await bulkUpsertPhotoRecords(
+        config,
+        true,
+        recordsToSync,
+        (savedCount, total) => {
+          setPickerLoadingText(`Syncing queue to cloud (${savedCount}/${total})...`);
+        }
+      );
     } catch (err) {
       setToastError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -183,6 +272,10 @@ export const App: React.FC = () => {
   const handleSwipe = async (photo: CandidatePhoto, status: PhotoStatus) => {
     const previousRecord = records[photo.id] || null;
     const actor = user?.email || 'local-device';
+    const isSample = photo.id.startsWith('sample_');
+
+    // Keep crisp previewDataUrl for 'print' & 'pending'; free it on 'shown'/'delete'
+    const keepPreview = status === 'print' || status === 'pending';
 
     const newRecord: PhotoRecord = {
       id: photo.id,
@@ -194,13 +287,17 @@ export const App: React.FC = () => {
       status,
       previousStatus: previousRecord?.status || null,
       thumbDataUrl: photo.thumbDataUrl,
+      previewDataUrl: keepPreview
+        ? photo.previewDataUrl || previousRecord?.previewDataUrl || null
+        : null,
       baseUrl: photo.baseUrl,
       baseUrlExpiresAt: photo.baseUrlExpiresAt,
+      pickedOrder: photo.pickedOrder || previousRecord?.pickedOrder,
       updatedAt: Date.now(),
       updatedBy: actor,
     };
 
-    // Optimistically update local state immediately so the card deck advances in 0ms
+    // Optimistic 0ms update
     setRecords((prev) => ({ ...prev, [photo.id]: newRecord }));
     setUndoStack((prev) => [
       ...prev,
@@ -212,9 +309,9 @@ export const App: React.FC = () => {
     ]);
 
     try {
-      await upsertPhotoRecord(config, isAuthenticated, newRecord);
+      await upsertPhotoRecord(config, isAuthenticated && !isSample, newRecord);
     } catch (err) {
-      setToastError(err instanceof Error ? err.message : 'Could not save to Firestore');
+      setToastError(err instanceof Error ? err.message : 'Could not sync swipe to Firestore');
     }
   };
 
@@ -222,28 +319,31 @@ export const App: React.FC = () => {
     if (undoStack.length === 0) return;
     const last = undoStack[undoStack.length - 1];
     setUndoStack((prev) => prev.slice(0, -1));
+    const isSample = last.photo.id.startsWith('sample_');
 
-    // Optimistic state restore
+    const restoredRecord: PhotoRecord | null = last.previousRecord
+      ? {
+          ...last.previousRecord,
+          previewDataUrl:
+            last.photo.previewDataUrl || last.previousRecord.previewDataUrl || null,
+        }
+      : null;
+
     setRecords((prev) => {
       const next = { ...prev };
-      if (last.previousRecord) {
-        next[last.photo.id] = last.previousRecord;
+      if (restoredRecord) {
+        next[last.photo.id] = restoredRecord;
       } else {
         delete next[last.photo.id];
       }
       return next;
     });
 
-    setCandidates((prev) => [
-      last.photo,
-      ...prev.filter((item) => item.id !== last.photo.id),
-    ]);
-
     try {
-      if (last.previousRecord) {
-        await upsertPhotoRecord(config, isAuthenticated, last.previousRecord);
+      if (restoredRecord) {
+        await upsertPhotoRecord(config, isAuthenticated && !isSample, restoredRecord);
       } else {
-        await removePhotoRecord(config, isAuthenticated, last.photo.id);
+        await removePhotoRecord(config, isAuthenticated && !isSample, last.photo.id);
       }
     } catch (err) {
       setToastError(err instanceof Error ? err.message : 'Undo sync failed');
@@ -251,40 +351,38 @@ export const App: React.FC = () => {
   };
 
   const handleUnmarkFromAdmin = async (ids: string[]) => {
-    const restoredCandidates: CandidatePhoto[] = [];
-    for (const id of ids) {
-      const rec = records[id];
-      if (rec) {
-        restoredCandidates.push({
-          id: rec.id,
-          filename: rec.filename,
-          mimeType: rec.mimeType,
-          createTime: rec.createTime,
-          width: rec.width,
-          height: rec.height,
-          thumbDataUrl: rec.thumbDataUrl,
-          displayUrl: rec.thumbDataUrl,
-          baseUrl: rec.baseUrl,
-          baseUrlExpiresAt: rec.baseUrlExpiresAt,
-        });
-      }
-    }
+    // Setting status back to 'pending' puts unmarked photos right back into the synced Swipe deck across ALL devices!
+    const actor = user?.email || 'family-admin';
+    const now = Date.now();
+
+    const realIds = ids.filter((id) => !id.startsWith('sample_'));
+    const sampleIds = ids.filter((id) => id.startsWith('sample_'));
 
     setRecords((prev) => {
       const next = { ...prev };
-      for (const id of ids) delete next[id];
+      for (const id of realIds) {
+        if (next[id]) {
+          next[id] = {
+            ...next[id],
+            status: 'pending',
+            pickedOrder: now,
+            updatedAt: now,
+            updatedBy: actor,
+          };
+        }
+      }
+      for (const id of sampleIds) {
+        delete next[id];
+      }
       return next;
     });
 
-    if (restoredCandidates.length > 0) {
-      setCandidates((prev) => {
-        const existingIds = new Set(prev.map((p) => p.id));
-        const toAdd = restoredCandidates.filter((c) => !existingIds.has(c.id));
-        return [...toAdd, ...prev];
-      });
+    if (realIds.length > 0) {
+      await bulkUpdatePhotoStatus(config, isAuthenticated, realIds, 'pending', actor);
     }
-
-    await bulkRemovePhotoRecords(config, isAuthenticated, ids);
+    if (sampleIds.length > 0) {
+      await bulkRemovePhotoRecords(config, false, sampleIds);
+    }
   };
 
   const handleUpdateStatusFromAdmin = async (ids: string[], newStatus: PhotoStatus) => {
@@ -300,6 +398,20 @@ export const App: React.FC = () => {
       return next;
     });
     await bulkUpdatePhotoStatus(config, isAuthenticated, ids, newStatus, actor);
+  };
+
+  const handleClearPendingQueue = async () => {
+    const pendingIds = Object.values(records)
+      .filter((r) => r.status === 'pending')
+      .map((r) => r.id);
+    if (pendingIds.length === 0) return;
+
+    setRecords((prev) => {
+      const next = { ...prev };
+      for (const id of pendingIds) delete next[id];
+      return next;
+    });
+    await bulkRemovePhotoRecords(config, isAuthenticated, pendingIds);
   };
 
   const handleSaveConfig = (newCfg: RuntimeConfig, manualToken?: string) => {
@@ -366,7 +478,11 @@ export const App: React.FC = () => {
             aria-label="Account and Settings"
           >
             {user?.photoURL ? (
-              <img src={user.photoURL} alt={user.displayName || 'Account'} referrerPolicy="no-referrer" />
+              <img
+                src={user.photoURL}
+                alt={user.displayName || 'Account'}
+                referrerPolicy="no-referrer"
+              />
             ) : (
               <UserIcon size={18} />
             )}
@@ -418,10 +534,11 @@ export const App: React.FC = () => {
           onSwipe={handleSwipe}
           onUndo={handleUndo}
           onOpenGooglePicker={handleOpenGooglePicker}
-          onReloadDemo={() => loadDemoRoll(true)}
+          onReloadDemo={() => loadSampleRoll(true)}
           onJumpToAdmin={(tab) => switchMode('admin', tab)}
           counts={counts}
           pickerLoadingText={pickerLoadingText}
+          isCloudSynced={isAuthenticated}
         />
       ) : (
         <AdminView
@@ -460,8 +577,10 @@ export const App: React.FC = () => {
           config={config}
           user={user}
           accessToken={accessToken}
+          pendingCount={counts.pending}
           onSignIn={handleGoogleSignIn}
           onSignOut={() => signOutUser(config)}
+          onClearPendingQueue={handleClearPendingQueue}
           onSaveConfig={handleSaveConfig}
           onClose={() => setShowConfigModal(false)}
         />

@@ -1,6 +1,15 @@
 import React, { useState } from 'react';
 import { User } from 'firebase/auth';
-import { X, Save, LogIn, LogOut, ChevronDown, ChevronUp, ShieldCheck } from 'lucide-react';
+import {
+  X,
+  Save,
+  LogIn,
+  LogOut,
+  ChevronDown,
+  ChevronUp,
+  ShieldCheck,
+  Trash2,
+} from 'lucide-react';
 import { RuntimeConfig } from '../types';
 import { isFirebaseConfigured } from '../services/config';
 
@@ -8,8 +17,10 @@ interface ConfigModalProps {
   config: RuntimeConfig;
   user: User | null;
   accessToken: string;
+  pendingCount: number;
   onSignIn: () => Promise<string>;
   onSignOut: () => Promise<void>;
+  onClearPendingQueue: () => Promise<void>;
   onSaveConfig: (newCfg: RuntimeConfig, manualAccessToken?: string) => void;
   onClose: () => void;
 }
@@ -18,8 +29,10 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({
   config,
   user,
   accessToken,
+  pendingCount,
   onSignIn,
   onSignOut,
+  onClearPendingQueue,
   onSaveConfig,
   onClose,
 }) => {
@@ -94,7 +107,9 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({
           {user ? (
             <>
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: '14px', fontWeight: 700 }}>{user.displayName || 'Signed In'}</div>
+                <div style={{ fontSize: '14px', fontWeight: 700 }}>
+                  {user.displayName || 'Signed In'}
+                </div>
                 <div
                   style={{
                     fontSize: '12px',
@@ -117,7 +132,7 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({
                   }}
                 >
                   <ShieldCheck size={13} />
-                  <span>Connected to Firestore ({config.firebaseProjectId})</span>
+                  <span>Cross-device queue synced ({config.firebaseProjectId})</span>
                 </div>
               </div>
               <button
@@ -137,7 +152,7 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({
               <div>
                 <div style={{ fontSize: '14px', fontWeight: 700 }}>Sign in with Google</div>
                 <div style={{ fontSize: '12px', color: 'var(--ink-secondary)', marginTop: '2px' }}>
-                  Sync print picks across devices &amp; pick from Google Photos
+                  Sync selected photo queue &amp; swipes across all your devices
                 </div>
               </div>
               <button
@@ -154,6 +169,40 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({
             </>
           )}
         </div>
+
+        {pendingCount > 0 && (
+          <div
+            style={{
+              background: 'var(--bg-canvas)',
+              borderRadius: 'var(--radius-md)',
+              padding: '12px 14px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '10px',
+            }}
+          >
+            <div>
+              <div style={{ fontSize: '13px', fontWeight: 700 }}>
+                {pendingCount} unswiped photo{pendingCount > 1 ? 's' : ''} in synced queue
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--ink-secondary)' }}>
+                Clear the pending deck without marking them as shown
+              </div>
+            </div>
+            <button
+              type="button"
+              className="pill-btn pill-btn-rose"
+              onClick={async () => {
+                await onClearPendingQueue();
+                onClose();
+              }}
+            >
+              <Trash2 size={13} />
+              <span>Clear Deck</span>
+            </button>
+          </div>
+        )}
 
         {/* Collapsible Advanced Firebase Configuration */}
         <button
@@ -224,7 +273,11 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({
               />
             </div>
 
-            <button type="submit" className="pill-btn pill-btn-ink" style={{ width: '100%', padding: '11px' }}>
+            <button
+              type="submit"
+              className="pill-btn pill-btn-ink"
+              style={{ width: '100%', padding: '11px' }}
+            >
               <Save size={15} />
               <span>Save Settings</span>
             </button>

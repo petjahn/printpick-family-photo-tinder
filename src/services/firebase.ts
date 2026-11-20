@@ -13,6 +13,7 @@ import {
   doc,
   setDoc,
   deleteDoc,
+  deleteField,
   onSnapshot,
   writeBatch,
   Firestore,
@@ -165,7 +166,6 @@ export function subscribeFamilyPhotos(
   onError?: (err: Error) => void
 ): () => void {
   const { db } = initFirebaseIfConfigured(cfg);
-  // Only attach Firestore listener once signed in so sample swiping works offline/pre-login cleanly
   if (!db || !isAuthenticated) {
     onUpdate(loadLocalMirror());
     localListeners.push(onUpdate);
@@ -191,6 +191,22 @@ export function subscribeFamilyPhotos(
   );
 }
 
+function prepareFirestorePayload(record: PhotoRecord): Record<string, unknown> {
+  const shouldFreeLargePreview =
+    record.status === 'shown' || record.status === 'delete' || record.status === 'printed';
+
+  const entries = Object.entries(record).filter(([, v]) => v !== undefined);
+  const payload: Record<string, unknown> = Object.fromEntries(entries);
+
+  if (shouldFreeLargePreview || record.previewDataUrl === null) {
+    // Remove ~65KB previewDataUrl from Firestore once swiped to Skip/Delete/Printed,
+    // retaining the compact ~8KB thumbDataUrl for Admin grids!
+    payload.previewDataUrl = deleteField();
+  }
+
+  return payload;
+}
+
 export async function upsertPhotoRecord(
   cfg: RuntimeConfig,
   isAuthenticated: boolean,
@@ -199,16 +215,53 @@ export async function upsertPhotoRecord(
   const { db } = initFirebaseIfConfigured(cfg);
   if (!db || !isAuthenticated) {
     const current = loadLocalMirror();
-    current[record.id] = record;
+    const copy = { ...record };
+    if (copy.status === 'shown' || copy.status === 'delete' || copy.status === 'printed') {
+      delete copy.previewDataUrl;
+    }
+    current[record.id] = copy;
     saveLocalMirror(current);
     return;
   }
+
   const docRef = doc(db, 'workspaces', 'family', 'photos', record.id);
-  // Firestore rejects `undefined` property values, so strip any undefined keys cleanly
-  const sanitized = Object.fromEntries(
-    Object.entries(record).filter(([, v]) => v !== undefined)
-  );
-  await setDoc(docRef, sanitized, { merge: true });
+  await setDoc(docRef, prepareFirestorePayload(record), { merge: true });
+}
+
+/**
+ * Saves newly picked photos to Firestore in safe chunks of 25 documents per batch
+ * so large selections (e.g. 200-500 photos) never exceed Firestore's 10 MiB batch limit.
+ */
+export async function bulkUpsertPhotoRecords(
+  cfg: RuntimeConfig,
+  isAuthenticated: boolean,
+  recordsList: PhotoRecord[],
+  onProgress?: (savedCount: number, total: number) => void
+): Promise<void> {
+  if (recordsList.length === 0) return;
+  const { db } = initFirebaseIfConfigured(cfg);
+
+  if (!db || !isAuthenticated) {
+    const current = loadLocalMirror();
+    for (const rec of recordsList) {
+      current[rec.id] = rec;
+    }
+    saveLocalMirror(current);
+    onProgress?.(recordsList.length, recordsList.length);
+    return;
+  }
+
+  const CHUNK_SIZE = 25;
+  for (let start = 0; start < recordsList.length; start += CHUNK_SIZE) {
+    const slice = recordsList.slice(start, start + CHUNK_SIZE);
+    const batch = writeBatch(db);
+    for (const rec of slice) {
+      const ref = doc(db, 'workspaces', 'family', 'photos', rec.id);
+      batch.set(ref, prepareFirestorePayload(rec), { merge: true });
+    }
+    await batch.commit();
+    onProgress?.(Math.min(recordsList.length, start + slice.length), recordsList.length);
+  }
 }
 
 export async function removePhotoRecord(
@@ -242,11 +295,14 @@ export async function bulkRemovePhotoRecords(
     saveLocalMirror(current);
     return;
   }
-  const batch = writeBatch(db);
-  for (const id of photoIds) {
-    batch.delete(doc(db, 'workspaces', 'family', 'photos', id));
+  const CHUNK_SIZE = 250;
+  for (let i = 0; i < photoIds.length; i += CHUNK_SIZE) {
+    const batch = writeBatch(db);
+    for (const id of photoIds.slice(i, i + CHUNK_SIZE)) {
+      batch.delete(doc(db, 'workspaces', 'family', 'photos', id));
+    }
+    await batch.commit();
   }
-  await batch.commit();
 }
 
 export async function bulkUpdatePhotoStatus(
@@ -275,10 +331,23 @@ export async function bulkUpdatePhotoStatus(
     saveLocalMirror(current);
     return;
   }
-  const batch = writeBatch(db);
-  for (const id of photoIds) {
-    const ref = doc(db, 'workspaces', 'family', 'photos', id);
-    batch.set(ref, { status, updatedAt: now, updatedBy }, { merge: true });
+
+  const shouldFreePreview = status === 'shown' || status === 'delete' || status === 'printed';
+  const CHUNK_SIZE = 250;
+  for (let i = 0; i < photoIds.length; i += CHUNK_SIZE) {
+    const batch = writeBatch(db);
+    for (const id of photoIds.slice(i, i + CHUNK_SIZE)) {
+      const ref = doc(db, 'workspaces', 'family', 'photos', id);
+      const updatePayload: Record<string, unknown> = {
+        status,
+        updatedAt: now,
+        updatedBy,
+      };
+      if (shouldFreePreview) {
+        updatePayload.previewDataUrl = deleteField();
+      }
+      batch.set(ref, updatePayload, { merge: true });
+    }
+    await batch.commit();
   }
-  await batch.commit();
 }

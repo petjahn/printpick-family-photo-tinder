@@ -25,6 +25,7 @@ interface SwipeViewProps {
     shown: number;
   };
   pickerLoadingText: string;
+  isCloudSynced?: boolean;
 }
 
 interface GestureRefState {
@@ -49,6 +50,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
   onJumpToAdmin,
   counts,
   pickerLoadingText,
+  isCloudSynced,
 }) => {
   const current = queue[0] || null;
   const secondCard = queue[1] || null;
@@ -356,7 +358,10 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
       {/* Compact Top Meta Strip */}
       <div className="swipe-meta-row">
         <span className="queue-counter-label">
-          {queue.length > 0 ? `${queue.length} photo${queue.length > 1 ? 's' : ''} left` : 'All caught up'}
+          {queue.length > 0
+            ? `${queue.length} photo${queue.length > 1 ? 's' : ''} left`
+            : 'All caught up'}
+          {isCloudSynced ? ' • Cloud synced' : ''}
         </span>
 
         <div className="mini-counters">

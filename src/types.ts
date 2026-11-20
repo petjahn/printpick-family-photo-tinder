@@ -1,4 +1,4 @@
-export type PhotoStatus = 'print' | 'delete' | 'shown' | 'printed';
+export type PhotoStatus = 'pending' | 'print' | 'delete' | 'shown' | 'printed';
 
 export interface PhotoRecord {
   id: string;
@@ -10,8 +10,10 @@ export interface PhotoRecord {
   status: PhotoStatus;
   previousStatus?: PhotoStatus | null;
   thumbDataUrl: string;
+  previewDataUrl?: string | null;
   baseUrl?: string;
   baseUrlExpiresAt?: number;
+  pickedOrder?: number;
   updatedAt: number;
   updatedBy: string;
 }
@@ -24,9 +26,11 @@ export interface CandidatePhoto {
   width: number;
   height: number;
   thumbDataUrl: string;
+  previewDataUrl?: string;
   displayUrl: string;
   baseUrl?: string;
   baseUrlExpiresAt?: number;
+  pickedOrder?: number;
 }
 
 export interface UndoAction {

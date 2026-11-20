@@ -160,8 +160,9 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
       if (!blob) {
         expiredItems.push(item);
-        if (item.thumbDataUrl) {
-          const r = await fetch(item.thumbDataUrl);
+        const fallbackDataUrl = item.previewDataUrl || item.thumbDataUrl;
+        if (fallbackDataUrl) {
+          const r = await fetch(fallbackDataUrl);
           blob = await r.blob();
         }
       }
