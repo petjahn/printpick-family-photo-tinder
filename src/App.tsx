@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { User } from 'firebase/auth';
-import { Layers, LayoutGrid, Plus, User as UserIcon, Camera, LogIn } from 'lucide-react';
+import { Layers, LayoutGrid, Plus, User as UserIcon, Camera, LogIn, Star } from 'lucide-react';
 import { CandidatePhoto, PhotoRecord, PhotoStatus, RuntimeConfig, UndoAction } from './types';
 import { isFirebaseConfigured, loadRuntimeConfig, saveRuntimeConfig } from './services/config';
 import {
   bulkRemovePhotoRecords,
+  bulkSetFavoriteFlag,
   bulkUpdatePhotoStatus,
   bulkUpsertPhotoRecords,
   getStoredAccessToken,
@@ -93,7 +94,7 @@ export const App: React.FC = () => {
   useEffect(() => {
     let cancelled = false;
     const pendingTop = Object.values(records)
-      .filter((r) => r.status === 'pending' && !localBlobUrlsRef.current[r.id])
+      .filter((r) => r.status === 'pending' && !localBlobUrlsRef.current[recId(r)])
       .slice(0, 6);
 
     if (pendingTop.length === 0) return;
@@ -134,6 +135,7 @@ export const App: React.FC = () => {
         createTime: rec.createTime,
         width: rec.width,
         height: rec.height,
+        isFavorite: Boolean(rec.isFavorite),
         thumbDataUrl: rec.thumbDataUrl,
         previewDataUrl: rec.previewDataUrl || undefined,
         displayUrl:
@@ -151,6 +153,7 @@ export const App: React.FC = () => {
       delete: list.filter((r) => r.status === 'delete').length,
       shown: list.filter((r) => r.status === 'shown' || r.status === 'printed').length,
       pending: list.filter((r) => r.status === 'pending').length,
+      superlikes: list.filter((r) => Boolean(r.isFavorite) && r.status !== 'delete').length,
     };
   }, [records]);
 
@@ -175,19 +178,24 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleOpenGooglePicker = async () => {
+  const handleOpenGooglePicker = async (markAsFavoritesBatch = false) => {
     setToastError('');
     if (!isAuthenticated || !accessToken) {
-      // Sign in first inside direct user gesture; once signed in, user can tap Pick from Google Photos
       await handleGoogleSignIn();
       return;
     }
 
-    // Open blank window synchronously inside user tap so iOS Safari / mobile popup blockers allow it
     const popupWin = window.open('about:blank', '_blank');
+    const waitingHint = markAsFavoritesBatch
+      ? 'Tip: Type "Favorites" in the Google Photos search bar, select your starred photos, and tap Done!'
+      : 'Select your photos in the Google Photos tab and tap Done...';
 
     try {
-      setPickerLoadingText('Creating Google Photos Picker session...');
+      setPickerLoadingText(
+        markAsFavoritesBatch
+          ? 'Opening Google Photos to sync your Starred Favourites...'
+          : 'Creating Google Photos Picker session...'
+      );
       const session = await createPickerSession(accessToken);
       setActivePickerUrl(session.pickerUri);
 
@@ -195,7 +203,7 @@ export const App: React.FC = () => {
         popupWin.location.href = session.pickerUri;
       }
 
-      await pollPickerSessionUntilReady(session.id, accessToken, (msg) =>
+      await pollPickerSessionUntilReady(session.id, accessToken, waitingHint, (msg) =>
         setPickerLoadingText(msg)
       );
 
@@ -204,14 +212,28 @@ export const App: React.FC = () => {
         existingStatusById[id] = rec.status;
       }
 
-      const picked = await listPickedMediaItems(
-        session.id,
-        accessToken,
-        existingStatusById,
-        (msg) => setPickerLoadingText(msg)
-      );
+      const { newOrRefreshedCandidates, matchedExistingFavoriteIds } =
+        await listPickedMediaItems(
+          session.id,
+          accessToken,
+          existingStatusById,
+          markAsFavoritesBatch,
+          (msg) => setPickerLoadingText(msg)
+        );
 
-      if (picked.length === 0) {
+      // 1. Instantly stamp isFavorite = true on any already-queued/existing photos matched by ID!
+      if (matchedExistingFavoriteIds.length > 0) {
+        setRecords((prev) => {
+          const next = { ...prev };
+          for (const id of matchedExistingFavoriteIds) {
+            if (next[id]) next[id] = { ...next[id], isFavorite: true };
+          }
+          return next;
+        });
+        await bulkSetFavoriteFlag(config, true, matchedExistingFavoriteIds, true);
+      }
+
+      if (newOrRefreshedCandidates.length === 0) {
         setPickerLoadingText('');
         setActivePickerUrl('');
         return;
@@ -221,7 +243,7 @@ export const App: React.FC = () => {
       const now = Date.now();
       const recordsToSync: PhotoRecord[] = [];
 
-      for (const item of picked) {
+      for (const item of newOrRefreshedCandidates) {
         if (item.displayUrl) {
           localBlobUrlsRef.current[item.id] = item.displayUrl;
         }
@@ -229,6 +251,7 @@ export const App: React.FC = () => {
         if (existing && existing.status === 'print') {
           recordsToSync.push({
             ...existing,
+            isFavorite: Boolean(existing.isFavorite || item.isFavorite),
             baseUrl: item.baseUrl,
             baseUrlExpiresAt: item.baseUrlExpiresAt,
             previewDataUrl: item.previewDataUrl || existing.previewDataUrl || null,
@@ -245,6 +268,7 @@ export const App: React.FC = () => {
             height: item.height,
             status: 'pending',
             previousStatus: null,
+            isFavorite: Boolean(existing?.isFavorite || item.isFavorite),
             thumbDataUrl: item.thumbDataUrl,
             previewDataUrl: item.previewDataUrl || null,
             baseUrl: item.baseUrl,
@@ -276,7 +300,11 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleSwipe = async (photo: CandidatePhoto, status: PhotoStatus) => {
+  const handleSwipe = async (
+    photo: CandidatePhoto,
+    status: PhotoStatus,
+    markAsSuperlike?: boolean
+  ) => {
     const previousRecord = records[photo.id] || null;
     const actor = user?.email || 'family-member';
     const keepPreview = status === 'print' || status === 'pending';
@@ -290,6 +318,7 @@ export const App: React.FC = () => {
       height: photo.height,
       status,
       previousStatus: previousRecord?.status || null,
+      isFavorite: Boolean(markAsSuperlike || photo.isFavorite || previousRecord?.isFavorite),
       thumbDataUrl: photo.thumbDataUrl,
       previewDataUrl: keepPreview
         ? photo.previewDataUrl || previousRecord?.previewDataUrl || null
@@ -390,6 +419,17 @@ export const App: React.FC = () => {
     await bulkUpdatePhotoStatus(config, isAuthenticated, ids, newStatus, actor);
   };
 
+  const handleToggleFavoriteFromAdmin = async (id: string, nextFav: boolean) => {
+    setRecords((prev) => {
+      if (!prev[id]) return prev;
+      return {
+        ...prev,
+        [id]: { ...prev[id], isFavorite: nextFav },
+      };
+    });
+    await bulkSetFavoriteFlag(config, isAuthenticated, [id], nextFav);
+  };
+
   const handleClearPendingQueue = async () => {
     const pendingIds = Object.values(records)
       .filter((r) => r.status === 'pending')
@@ -448,7 +488,7 @@ export const App: React.FC = () => {
           </button>
         </nav>
 
-        {/* Explicit Sign-In vs Google Photos CTA + Account Avatar */}
+        {/* Explicit Sign-In vs Google Photos + Favourites CTAs + Account Avatar */}
         <div className="header-right-actions">
           {!isAuthenticated ? (
             <button
@@ -461,15 +501,28 @@ export const App: React.FC = () => {
               <span>Sign In</span>
             </button>
           ) : (
-            <button
-              id="btn-pick-google-photos"
-              type="button"
-              className="pill-btn pill-btn-ink"
-              onClick={handleOpenGooglePicker}
-            >
-              <Plus size={15} strokeWidth={2.5} />
-              <span>Google Photos</span>
-            </button>
+            <>
+              <button
+                id="btn-pick-favorites"
+                type="button"
+                className="pill-btn pill-btn-super"
+                onClick={() => handleOpenGooglePicker(true)}
+                title="Sync Starred / Favourite photos from Google Photos as Super Likes"
+              >
+                <Star size={14} fill="currentColor" />
+                <span className="hide-xs">Favourites</span>
+              </button>
+
+              <button
+                id="btn-pick-google-photos"
+                type="button"
+                className="pill-btn pill-btn-ink"
+                onClick={() => handleOpenGooglePicker(false)}
+              >
+                <Plus size={15} strokeWidth={2.5} />
+                <span>Photos</span>
+              </button>
+            </>
           )}
 
           <button
@@ -542,7 +595,8 @@ export const App: React.FC = () => {
           onSwipe={handleSwipe}
           onUndo={handleUndo}
           onSignIn={handleGoogleSignIn}
-          onOpenGooglePicker={handleOpenGooglePicker}
+          onOpenGooglePicker={() => handleOpenGooglePicker(false)}
+          onOpenFavoritesPicker={() => handleOpenGooglePicker(true)}
           onJumpToAdmin={(tab) => switchMode('admin', tab)}
           counts={counts}
           pickerLoadingText={pickerLoadingText}
@@ -556,7 +610,8 @@ export const App: React.FC = () => {
           initialTab={adminInitialTab}
           onUnmark={handleUnmarkFromAdmin}
           onUpdateStatus={handleUpdateStatusFromAdmin}
-          onRefreshExpiredViaPicker={handleOpenGooglePicker}
+          onToggleFavorite={handleToggleFavoriteFromAdmin}
+          onRefreshExpiredViaPicker={() => handleOpenGooglePicker(false)}
         />
       )}
 
@@ -597,3 +652,7 @@ export const App: React.FC = () => {
     </div>
   );
 };
+
+function recId(r: PhotoRecord): string {
+  return r.id;
+}

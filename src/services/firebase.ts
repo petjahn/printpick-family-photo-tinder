@@ -351,3 +351,34 @@ export async function bulkUpdatePhotoStatus(
     await batch.commit();
   }
 }
+
+export async function bulkSetFavoriteFlag(
+  cfg: RuntimeConfig,
+  isAuthenticated: boolean,
+  photoIds: string[],
+  isFavorite: boolean
+): Promise<void> {
+  if (photoIds.length === 0) return;
+  const { db } = initFirebaseIfConfigured(cfg);
+  if (!db || !isAuthenticated) {
+    const current = loadLocalMirror();
+    for (const id of photoIds) {
+      if (current[id]) {
+        current[id] = { ...current[id], isFavorite };
+      }
+    }
+    saveLocalMirror(current);
+    return;
+  }
+
+  const CHUNK_SIZE = 250;
+  for (let i = 0; i < photoIds.length; i += CHUNK_SIZE) {
+    const batch = writeBatch(db);
+    for (const id of photoIds.slice(i, i + CHUNK_SIZE)) {
+      const ref = doc(db, 'workspaces', 'family', 'photos', id);
+      batch.set(ref, { isFavorite }, { merge: true });
+    }
+    await batch.commit();
+  }
+}
+

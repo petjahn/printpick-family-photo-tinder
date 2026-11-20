@@ -9,6 +9,7 @@ import {
   Copy,
   Heart,
   Check,
+  Star,
 } from 'lucide-react';
 import { PhotoRecord, PhotoStatus } from '../types';
 import { getCachedFullResBlob } from '../services/idbCache';
@@ -23,6 +24,7 @@ interface AdminViewProps {
   initialTab?: AdminTab;
   onUnmark: (ids: string[]) => Promise<void>;
   onUpdateStatus: (ids: string[], newStatus: PhotoStatus) => Promise<void>;
+  onToggleFavorite: (id: string, nextFav: boolean) => Promise<void>;
   onRefreshExpiredViaPicker: () => Promise<void>;
 }
 
@@ -32,10 +34,12 @@ export const AdminView: React.FC<AdminViewProps> = ({
   initialTab = 'print',
   onUnmark,
   onUpdateStatus,
+  onToggleFavorite,
   onRefreshExpiredViaPicker,
 }) => {
   const [activeTab, setActiveTab] = useState<AdminTab>(initialTab);
   const [searchQuery, setSearchQuery] = useState('');
+  const [onlySuperlikes, setOnlySuperlikes] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [statusMessage, setStatusMessage] = useState<string>('');
   const [isExportingZip, setIsExportingZip] = useState(false);
@@ -48,8 +52,16 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
   const allList = useMemo(() => Object.values(records), [records]);
 
+  // Sort Superlikes (Google Photos Favourites) first inside Print Queue!
   const printItems = useMemo(
-    () => allList.filter((r) => r.status === 'print').sort((a, b) => b.updatedAt - a.updatedAt),
+    () =>
+      allList
+        .filter((r) => r.status === 'print')
+        .sort(
+          (a, b) =>
+            Number(Boolean(b.isFavorite)) - Number(Boolean(a.isFavorite)) ||
+            b.updatedAt - a.updatedAt
+        ),
     [allList]
   );
 
@@ -79,14 +91,16 @@ export const AdminView: React.FC<AdminViewProps> = ({
     const base =
       activeTab === 'print' ? printItems : activeTab === 'delete' ? deleteItems : shownItems;
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return base;
-    return base.filter(
-      (item) =>
+    return base.filter((item) => {
+      if (onlySuperlikes && !item.isFavorite) return false;
+      if (!q) return true;
+      return (
         item.filename.toLowerCase().includes(q) ||
         item.createTime.toLowerCase().includes(q) ||
         (item.updatedBy || '').toLowerCase().includes(q)
-    );
-  }, [activeTab, printItems, deleteItems, shownItems, searchQuery]);
+      );
+    });
+  }, [activeTab, printItems, deleteItems, shownItems, searchQuery, onlySuperlikes]);
 
   const deleteGroupsByDate = useMemo(() => {
     const groups: Record<string, PhotoRecord[]> = {};
@@ -127,7 +141,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
     const targets =
       selectedIds.size > 0
         ? printItems.filter((item) => selectedIds.has(item.id))
-        : printItems;
+        : visibleItems.filter((item) => item.status === 'print');
 
     if (targets.length === 0) return;
     setIsExportingZip(true);
@@ -169,8 +183,9 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
       if (blob) {
         const bytes = new Uint8Array(await blob.arrayBuffer());
+        const prefix = item.isFavorite ? 'STAR_' : '';
         zipInputs.push({
-          path: `print_order/${item.filename}`,
+          path: `print_order/${prefix}${item.filename}`,
           bytes,
         });
       }
@@ -271,7 +286,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
               Ready for Print Shop ({printItems.length})
             </h2>
             <p style={{ fontSize: '12px', color: 'var(--ink-secondary)', marginTop: '2px' }}>
-              Download a single ZIP file to send to your local printer, then mark the batch as printed.
+              Super Likes (Google Photos Favourites) appear first. Download ZIP to send to your printer.
             </p>
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
@@ -284,7 +299,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
             >
               <Download size={15} />
               <span>
-                Download ZIP ({selectedIds.size > 0 ? selectedIds.size : printItems.length})
+                Download ZIP ({selectedIds.size > 0 ? selectedIds.size : visibleItems.length})
               </span>
             </button>
 
@@ -341,7 +356,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
         </div>
       )}
 
-      {/* Search + Bulk Actions */}
+      {/* Search + Superlike Filter + Bulk Actions */}
       <div className="filter-row">
         <input
           type="search"
@@ -351,9 +366,19 @@ export const AdminView: React.FC<AdminViewProps> = ({
           onChange={(e) => setSearchQuery(e.target.value)}
         />
 
-        {activeTab === 'shown' && (
-          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-            {(['all', 'shown', 'printed'] as const).map((f) => (
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <button
+            type="button"
+            className={`pill-btn ${onlySuperlikes ? 'pill-btn-super-solid' : 'pill-btn-super'}`}
+            style={{ padding: '7px 12px', fontSize: '12px' }}
+            onClick={() => setOnlySuperlikes((v) => !v)}
+          >
+            <Star size={13} fill="currentColor" />
+            <span>Super Likes</span>
+          </button>
+
+          {activeTab === 'shown' &&
+            (['all', 'shown', 'printed'] as const).map((f) => (
               <button
                 key={f}
                 type="button"
@@ -364,33 +389,32 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 {f === 'all' ? 'All' : f === 'shown' ? 'Skipped' : 'Printed'}
               </button>
             ))}
-          </div>
-        )}
 
-        {visibleItems.length > 0 && (
-          <div style={{ display: 'flex', gap: '6px' }}>
-            <button
-              type="button"
-              className="pill-btn"
-              style={{ padding: '7px 12px', fontSize: '12px' }}
-              onClick={selectAllVisible}
-            >
-              {selectedIds.size === visibleItems.length ? 'Clear' : 'Select All'}
-            </button>
-
-            {selectedIds.size > 0 && (
+          {visibleItems.length > 0 && (
+            <>
               <button
                 type="button"
-                className="pill-btn pill-btn-ink"
+                className="pill-btn"
                 style={{ padding: '7px 12px', fontSize: '12px' }}
-                onClick={handleBulkUnmark}
+                onClick={selectAllVisible}
               >
-                <RotateCcw size={13} />
-                <span>Unmark ({selectedIds.size})</span>
+                {selectedIds.size === visibleItems.length ? 'Clear' : 'Select All'}
               </button>
-            )}
-          </div>
-        )}
+
+              {selectedIds.size > 0 && (
+                <button
+                  type="button"
+                  className="pill-btn pill-btn-ink"
+                  style={{ padding: '7px 12px', fontSize: '12px' }}
+                  onClick={handleBulkUnmark}
+                >
+                  <RotateCcw size={13} />
+                  <span>Unmark ({selectedIds.size})</span>
+                </button>
+              )}
+            </>
+          )}
+        </div>
       </div>
 
       {statusMessage && (
@@ -421,15 +445,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
             fontSize: '14px',
           }}
         >
-          No photos in{' '}
-          <strong>
-            {activeTab === 'print'
-              ? 'Print Queue'
-              : activeTab === 'delete'
-              ? 'Marked for Deletion'
-              : 'Seen History'}
-          </strong>{' '}
-          yet.
+          No photos match the current view.
         </div>
       ) : activeTab === 'delete' ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -496,6 +512,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                     item={item}
                     selected={selectedIds.has(item.id)}
                     onToggleSelect={() => toggleSelect(item.id)}
+                    onToggleFavorite={() => onToggleFavorite(item.id, !item.isFavorite)}
                     onUnmark={() => onUnmark([item.id])}
                     secondaryAction={{
                       label: 'Done',
@@ -515,6 +532,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
               item={item}
               selected={selectedIds.has(item.id)}
               onToggleSelect={() => toggleSelect(item.id)}
+              onToggleFavorite={() => onToggleFavorite(item.id, !item.isFavorite)}
               onUnmark={() => onUnmark([item.id])}
               secondaryAction={
                 activeTab === 'shown'
@@ -537,6 +555,7 @@ interface PhotoTileProps {
   item: PhotoRecord;
   selected: boolean;
   onToggleSelect: () => void;
+  onToggleFavorite: () => void;
   onUnmark: () => void;
   secondaryAction?: {
     label: string;
@@ -549,21 +568,65 @@ const PhotoTile: React.FC<PhotoTileProps> = ({
   item,
   selected,
   onToggleSelect,
+  onToggleFavorite,
   onUnmark,
   secondaryAction,
 }) => {
   return (
-    <div className={`photo-tile ${selected ? 'is-selected' : ''}`}>
+    <div
+      className={`photo-tile ${selected ? 'is-selected' : ''}`}
+      style={
+        item.isFavorite && !selected
+          ? {
+              borderColor: '#38bdf8',
+              boxShadow: '0 0 0 1.5px #38bdf8, 0 8px 20px rgba(14, 165, 233, 0.14)',
+            }
+          : undefined
+      }
+    >
       <div className="photo-tile-thumb" onClick={onToggleSelect}>
         <img src={item.thumbDataUrl} alt={item.filename} loading="lazy" />
 
         <div className="tile-check-badge">{selected ? <Check size={13} strokeWidth={3} /> : null}</div>
 
+        {/* Super Like / Favourite Star Badge / Toggle */}
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleFavorite();
+          }}
+          title={item.isFavorite ? 'Super Like (Favourite) — click to unstar' : 'Mark as Super Like'}
+          style={{
+            position: 'absolute',
+            top: '8px',
+            right: '8px',
+            border: 'none',
+            cursor: 'pointer',
+            padding: item.isFavorite ? '4px 8px' : '5px',
+            borderRadius: '999px',
+            background: item.isFavorite
+              ? 'linear-gradient(135deg, #38bdf8 0%, #0284c7 100%)'
+              : 'rgba(15, 18, 26, 0.45)',
+            color: '#ffffff',
+            fontSize: '10px',
+            fontWeight: 800,
+            letterSpacing: '0.04em',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '4px',
+            boxShadow: item.isFavorite ? '0 4px 10px rgba(2, 132, 199, 0.4)' : undefined,
+          }}
+        >
+          <Star size={11} fill={item.isFavorite ? '#ffffff' : 'none'} />
+          {item.isFavorite && <span>SUPER</span>}
+        </button>
+
         {item.status === 'printed' && (
           <span
             style={{
               position: 'absolute',
-              top: '8px',
+              bottom: '8px',
               right: '8px',
               padding: '3px 8px',
               borderRadius: '999px',

@@ -15,15 +15,24 @@ interface PickedMediaItemRaw {
   id: string;
   createTime?: string;
   type?: string;
+  isFavorite?: boolean;
+  favorite?: boolean;
+  starred?: boolean;
   mediaFile?: {
     baseUrl: string;
     mimeType?: string;
     filename?: string;
+    isFavorite?: boolean;
     mediaFileMetadata?: {
       width?: number;
       height?: number;
     };
   };
+}
+
+export interface PickedImportResult {
+  newOrRefreshedCandidates: CandidatePhoto[];
+  matchedExistingFavoriteIds: string[];
 }
 
 const PICKER_BASE = 'https://photospicker.googleapis.com/v1';
@@ -49,6 +58,7 @@ export async function createPickerSession(accessToken: string): Promise<PickerSe
 export async function pollPickerSessionUntilReady(
   sessionId: string,
   accessToken: string,
+  waitingHintMessage: string,
   onProgress?: (msg: string) => void,
   signal?: AbortSignal
 ): Promise<PickerSessionResponse> {
@@ -70,7 +80,7 @@ export async function pollPickerSessionUntilReady(
     if (data.mediaItemsSet) {
       return data;
     }
-    onProgress?.('Select your photos in the Google Photos tab and tap Done...');
+    onProgress?.(waitingHintMessage);
     await new Promise((r) => setTimeout(r, 2500));
   }
   throw new Error('Timed out waiting for Google Photos Picker selection');
@@ -80,8 +90,9 @@ export async function listPickedMediaItems(
   sessionId: string,
   accessToken: string,
   existingStatusById: Record<string, string>,
+  markBatchAsFavorite: boolean,
   onProgress?: (msg: string) => void
-): Promise<CandidatePhoto[]> {
+): Promise<PickedImportResult> {
   const rawItems: PickedMediaItemRaw[] = [];
   let pageToken = '';
 
@@ -109,7 +120,8 @@ export async function listPickedMediaItems(
     pageToken = body.nextPageToken || '';
   } while (pageToken);
 
-  const candidates: CandidatePhoto[] = [];
+  const newOrRefreshedCandidates: CandidatePhoto[] = [];
+  const matchedExistingFavoriteIds: string[] = [];
   const expiresAt = Date.now() + 55 * 60 * 1000;
   const baseOrder = Date.now();
 
@@ -118,10 +130,26 @@ export async function listPickedMediaItems(
     const mf = item.mediaFile;
     if (!mf?.baseUrl) continue;
 
+    const apiFav = Boolean(
+      markBatchAsFavorite ||
+        item.isFavorite ||
+        item.favorite ||
+        item.starred ||
+        mf.isFavorite
+    );
+
     const existingStatus = existingStatusById[item.id];
-    // If already swiped (shown or delete), skip downloading preview bytes altogether!
-    if (existingStatus === 'shown' || existingStatus === 'delete' || existingStatus === 'printed') {
-      continue;
+
+    // If importing a Favourites batch and the photo already exists in Firestore (e.g. already in pending queue!),
+    // stamp isFavorite = true instantly without re-downloading its image!
+    if (existingStatus) {
+      if (apiFav) {
+        matchedExistingFavoriteIds.push(item.id);
+      }
+      // Only re-download image bytes if it is in 'print' (to refresh expired 60m download link)
+      if (existingStatus !== 'print') {
+        continue;
+      }
     }
 
     onProgress?.(`Preparing photo ${i + 1} of ${rawItems.length} for cloud sync...`);
@@ -136,13 +164,14 @@ export async function listPickedMediaItems(
           mf.mediaFileMetadata?.height
         );
 
-      candidates.push({
+      newOrRefreshedCandidates.push({
         id: item.id,
         filename: mf.filename || `GPHOTO_${item.id.slice(0, 8)}.jpg`,
         mimeType: mf.mimeType || 'image/jpeg',
         createTime: item.createTime || new Date().toISOString(),
         width,
         height,
+        isFavorite: apiFav,
         thumbDataUrl,
         previewDataUrl,
         displayUrl,
@@ -151,11 +180,11 @@ export async function listPickedMediaItems(
         pickedOrder: baseOrder + i,
       });
     } catch {
-      // Skip unsupported media (e.g. non-decodable raw video)
+      // Skip unsupported media
     }
   }
 
-  return candidates;
+  return { newOrRefreshedCandidates, matchedExistingFavoriteIds };
 }
 
 async function fetchDisplayPreviewAndThumb(
@@ -226,12 +255,9 @@ function createSyncPreviewAndCompactThumb(imageSrc: string): Promise<{
       const nw = img.naturalWidth || 800;
       const nh = img.naturalHeight || 600;
 
-      // 1. Compact Admin grid thumbnail (~8-12 KB)
       const thumbDataUrl = encodeResizedDataUrl(img, 220, 0.65);
 
-      // 2. Crisp 1080px WebP preview synced to Firestore for sharp iPad, Desktop & Mobile viewing
       let previewDataUrl = encodeResizedDataUrl(img, 1080, 0.74);
-      // Safety guard: ensure preview string stays well below Firestore's 1 MB document limit
       if (previewDataUrl.length > 360_000) {
         previewDataUrl = encodeResizedDataUrl(img, 780, 0.64);
       }

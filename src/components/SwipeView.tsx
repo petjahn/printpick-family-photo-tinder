@@ -4,6 +4,7 @@ import {
   Heart,
   Trash2,
   X,
+  Star,
   ImagePlus,
   Sparkles,
   Maximize2,
@@ -16,15 +17,17 @@ import { CandidatePhoto, PhotoStatus } from '../types';
 interface SwipeViewProps {
   queue: CandidatePhoto[];
   canUndo: boolean;
-  onSwipe: (photo: CandidatePhoto, status: PhotoStatus) => void;
+  onSwipe: (photo: CandidatePhoto, status: PhotoStatus, markAsSuperlike?: boolean) => void;
   onUndo: () => void;
   onSignIn: () => void;
   onOpenGooglePicker: () => void;
+  onOpenFavoritesPicker: () => void;
   onJumpToAdmin: (tab?: 'print' | 'delete' | 'shown') => void;
   counts: {
     print: number;
     delete: number;
     shown: number;
+    superlikes: number;
   };
   pickerLoadingText: string;
   activePickerUrl?: string;
@@ -50,6 +53,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
   onUndo,
   onSignIn,
   onOpenGooglePicker,
+  onOpenFavoritesPicker,
   onJumpToAdmin,
   counts,
   pickerLoadingText,
@@ -70,6 +74,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
   const badgePrintRef = useRef<HTMLDivElement | null>(null);
   const badgeSkipRef = useRef<HTMLDivElement | null>(null);
   const badgeDeleteRef = useRef<HTMLDivElement | null>(null);
+  const badgeSuperRef = useRef<HTMLDivElement | null>(null);
   const tintRef = useRef<HTMLDivElement | null>(null);
 
   const gestureRef = useRef<GestureRefState>({
@@ -111,10 +116,6 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
     [naturalRatios]
   );
 
-  // Compute exact card dimensions:
-  // - On iPad & Desktop (stageW >= 580): fit the card frame tightly to the photo's true aspect ratio
-  //   within (stageW, stageH) so both portrait and landscape photos fill the page cleanly with zero cropping!
-  // - On Mobile (stageW < 580): fill the mobile card viewport, using ambient backdrop for landscape photos.
   const getCardFrameStyle = useCallback(
     (photo: CandidatePhoto): React.CSSProperties => {
       const { w: stageW, h: stageH } = stageSize;
@@ -151,10 +152,8 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
       if (fitContain) return true;
       const isTabletOrDesktop = stageSize.w >= 580;
       if (isTabletOrDesktop) {
-        // On Desktop/iPad the card frame itself matches the photo's aspect ratio, so contain shows 100% cleanly
         return true;
       }
-      // On Mobile phones, use contain + ambient backdrop automatically for landscape photos so edges aren't cut off
       const ratio = getPhotoRatio(photo);
       return ratio > 1.02;
     },
@@ -180,6 +179,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
     if (badgePrintRef.current) badgePrintRef.current.style.opacity = '0';
     if (badgeSkipRef.current) badgeSkipRef.current.style.opacity = '0';
     if (badgeDeleteRef.current) badgeDeleteRef.current.style.opacity = '0';
+    if (badgeSuperRef.current) badgeSuperRef.current.style.opacity = '0';
     if (tintRef.current) tintRef.current.style.opacity = '0';
   }, [current?.id]);
 
@@ -211,6 +211,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
     if (badgePrintRef.current) badgePrintRef.current.style.opacity = String(pOpacity);
     if (badgeSkipRef.current) badgeSkipRef.current.style.opacity = String(sOpacity);
     if (badgeDeleteRef.current) badgeDeleteRef.current.style.opacity = String(dOpacity);
+    if (badgeSuperRef.current) badgeSuperRef.current.style.opacity = '0';
 
     if (tintRef.current) {
       if (pOpacity > 0) {
@@ -229,7 +230,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
   }, []);
 
   const commitFlyOut = useCallback(
-    (status: PhotoStatus) => {
+    (status: PhotoStatus, isSuperLikeAction = false) => {
       if (!current || gestureRef.current.animatingOut) return;
       gestureRef.current.animatingOut = true;
       gestureRef.current.active = false;
@@ -240,8 +241,15 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
 
       if (card) {
         card.style.transition =
-          'transform 0.24s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.22s ease';
-        if (status === 'print') {
+          'transform 0.26s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.24s ease';
+        if (isSuperLikeAction) {
+          card.style.transform = `translate3d(${vw * 0.55}px, ${-vh * 0.55}px, 0px) rotate(10deg) scale(1.04)`;
+          if (badgeSuperRef.current) badgeSuperRef.current.style.opacity = '1';
+          if (tintRef.current) {
+            tintRef.current.style.background = 'rgba(14, 165, 233, 0.28)';
+            tintRef.current.style.opacity = '1';
+          }
+        } else if (status === 'print') {
           card.style.transform = `translate3d(${vw * 0.95}px, 30px, 0px) rotate(16deg)`;
           if (badgePrintRef.current) badgePrintRef.current.style.opacity = '1';
         } else if (status === 'shown') {
@@ -262,8 +270,8 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
 
       const swipedPhoto = current;
       setTimeout(() => {
-        onSwipe(swipedPhoto, status);
-      }, 210);
+        onSwipe(swipedPhoto, status, isSuperLikeAction ? true : undefined);
+      }, 220);
     },
     [current, onSwipe]
   );
@@ -282,10 +290,11 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
     if (badgePrintRef.current) badgePrintRef.current.style.opacity = '0';
     if (badgeSkipRef.current) badgeSkipRef.current.style.opacity = '0';
     if (badgeDeleteRef.current) badgeDeleteRef.current.style.opacity = '0';
+    if (badgeSuperRef.current) badgeSuperRef.current.style.opacity = '0';
     if (tintRef.current) tintRef.current.style.opacity = '0';
   }, []);
 
-  // Unified Gesture Lifecycle (iOS Touch, iPad Touch, Android Touch, and Desktop Mouse)
+  // Unified Gesture Lifecycle
   useEffect(() => {
     const card = activeCardRef.current;
     if (!card || !current) return;
@@ -405,7 +414,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
     };
   }, [current, applyDragVisuals, commitFlyOut, springBack]);
 
-  // Keyboard shortcuts for Desktop & iPad keyboards
+  // Keyboard shortcuts: Right = Print, Left = Skip, Up = Delete, S = Super Like, Backspace/Z = Undo
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
@@ -420,6 +429,9 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
         commitFlyOut('delete');
+      } else if (e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        commitFlyOut('print', true);
       } else if ((e.key === 'Backspace' || e.key.toLowerCase() === 'z') && canUndo) {
         e.preventDefault();
         onUndo();
@@ -451,6 +463,18 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
         </span>
 
         <div className="mini-counters">
+          {counts.superlikes > 0 && (
+            <button
+              type="button"
+              className="mini-counter-pill"
+              onClick={() => onJumpToAdmin('print')}
+              title="Superliked / Google Favourite Photos"
+            >
+              <Star size={13} fill="var(--color-super-bright)" color="var(--color-super-bright)" />
+              <span>{counts.superlikes}</span>
+            </button>
+          )}
+
           <button
             type="button"
             className="mini-counter-pill"
@@ -491,7 +515,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
               gap: '12px',
             }}
           >
-            <Sparkles size={28} color="var(--color-print)" />
+            <Sparkles size={28} color="var(--color-super-bright)" />
             <h2 style={{ fontSize: '17px', fontWeight: 700 }}>Importing from Google Photos</h2>
             <p style={{ fontSize: '13px', color: 'var(--ink-secondary)', lineHeight: 1.5 }}>
               {pickerLoadingText}
@@ -554,7 +578,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
                 }}
               >
                 {isCloudSynced
-                  ? 'Select a batch from Google Photos to start swiping. Your queue stays synced across all your devices.'
+                  ? 'Pick photos from Google Photos or sync your Starred Favourites (shown with a Super Like ★).'
                   : 'Sign in with your Google account to sync your family queue and pick photos from Google Photos.'}
               </p>
             </div>
@@ -573,14 +597,24 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
                   <span>Sign in with Google</span>
                 </button>
               ) : (
-                <button
-                  type="button"
-                  className="pill-btn pill-btn-ink"
-                  onClick={onOpenGooglePicker}
-                >
-                  <ImagePlus size={16} />
-                  <span>Pick from Google Photos</span>
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="pill-btn pill-btn-ink"
+                    onClick={onOpenGooglePicker}
+                  >
+                    <ImagePlus size={16} />
+                    <span>Pick Photos</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="pill-btn pill-btn-super"
+                    onClick={onOpenFavoritesPicker}
+                  >
+                    <Star size={15} fill="currentColor" />
+                    <span>Sync Favourites (Super Like)</span>
+                  </button>
+                </>
               )}
               {counts.print > 0 && (
                 <button
@@ -598,7 +632,9 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
             {/* 3rd Card in Stack */}
             {thirdCard && (
               <div
-                className="deck-card deck-card-behind-2"
+                className={`deck-card deck-card-behind-2 ${
+                  thirdCard.isFavorite ? 'is-superlike' : ''
+                }`}
                 style={getCardFrameStyle(thirdCard)}
                 aria-hidden="true"
               >
@@ -614,7 +650,9 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
             {secondCard && (
               <div
                 ref={nextCardRef}
-                className="deck-card deck-card-behind-1"
+                className={`deck-card deck-card-behind-1 ${
+                  secondCard.isFavorite ? 'is-superlike' : ''
+                }`}
                 style={getCardFrameStyle(secondCard)}
                 aria-hidden="true"
               >
@@ -631,12 +669,20 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
             <div
               ref={activeCardRef}
               key={current.id}
-              className="deck-card deck-card-active"
+              className={`deck-card deck-card-active ${current.isFavorite ? 'is-superlike' : ''}`}
               style={getCardFrameStyle(current)}
             >
               <div ref={tintRef} className="gesture-tint" />
 
-              {/* Live Swipe Badges */}
+              {/* Persistent Google Photos Favourite / Super Like Banner */}
+              {current.isFavorite && (
+                <div className="superlike-banner">
+                  <Star size={13} fill="#ffffff" />
+                  <span>Favourite · Super Like</span>
+                </div>
+              )}
+
+              {/* Live Swipe Action Stamps */}
               <div ref={badgePrintRef} className="gesture-badge gesture-badge-print">
                 <Heart size={18} fill="#ffffff" />
                 <span>PRINT</span>
@@ -648,6 +694,10 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
               <div ref={badgeDeleteRef} className="gesture-badge gesture-badge-delete">
                 <Trash2 size={18} />
                 <span>DELETE</span>
+              </div>
+              <div ref={badgeSuperRef} className="gesture-badge gesture-badge-super">
+                <Star size={18} fill="#ffffff" />
+                <span>SUPER LIKE</span>
               </div>
 
               {/* Fit / Fill Toggle on Mobile */}
@@ -702,8 +752,8 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
                       minute: '2-digit',
                     })}
                     {isTabletOrDesktop
-                      ? ' • Drag or press ← Skip • ↑ Delete • → Print'
-                      : ' • Swipe left to skip, up to delete, right to print'}
+                      ? ' • ← Skip • ↑ Delete • S Super Like • → Print'
+                      : ' • ← Skip • ↑ Delete • ★ Super • → Print'}
                   </div>
                 </div>
               </div>
@@ -712,7 +762,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
         )}
       </div>
 
-      {/* Tactile Circular Thumb Action Dock */}
+      {/* Tactile Tinder-Style 5-Button Circular Thumb Dock */}
       <div className="thumb-dock">
         <div className="dock-item">
           <button
@@ -723,7 +773,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
             onClick={onUndo}
             aria-label="Undo last swipe"
           >
-            <RotateCcw size={19} />
+            <RotateCcw size={18} />
           </button>
           <span className="dock-label">Undo</span>
         </div>
@@ -737,9 +787,34 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
             onClick={() => commitFlyOut('shown')}
             aria-label="Skip and mark as shown"
           >
-            <X size={27} strokeWidth={2.5} />
+            <X size={26} strokeWidth={2.5} />
           </button>
           <span className="dock-label">Skip</span>
+        </div>
+
+        <div className="dock-item">
+          <button
+            id="btn-swipe-superlike"
+            type="button"
+            className={`dock-circle dock-circle-md dock-circle-super ${
+              current?.isFavorite ? 'is-active' : ''
+            }`}
+            disabled={!current}
+            onClick={() => commitFlyOut('print', true)}
+            aria-label="Super Like and mark for print"
+            title="Super Like (S): Priority Print + Favourite ★"
+          >
+            <Star
+              size={22}
+              fill={current?.isFavorite ? '#ffffff' : 'currentColor'}
+            />
+          </button>
+          <span
+            className="dock-label"
+            style={{ color: current?.isFavorite ? 'var(--color-super)' : undefined }}
+          >
+            Super
+          </span>
         </div>
 
         <div className="dock-item">
@@ -751,7 +826,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
             onClick={() => commitFlyOut('delete')}
             aria-label="Mark for deletion"
           >
-            <Trash2 size={22} />
+            <Trash2 size={21} />
           </button>
           <span className="dock-label">Delete</span>
         </div>
@@ -765,7 +840,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
             onClick={() => commitFlyOut('print')}
             aria-label="Mark for print"
           >
-            <Heart size={26} fill="#ffffff" />
+            <Heart size={25} fill="#ffffff" />
           </button>
           <span className="dock-label">Print</span>
         </div>

@@ -9,6 +9,7 @@ export interface PhotoRecord {
   height: number;
   status: PhotoStatus;
   previousStatus?: PhotoStatus | null;
+  isFavorite?: boolean;
   thumbDataUrl: string;
   previewDataUrl?: string | null;
   baseUrl?: string;
@@ -25,6 +26,7 @@ export interface CandidatePhoto {
   createTime: string;
   width: number;
   height: number;
+  isFavorite?: boolean;
   thumbDataUrl: string;
   previewDataUrl?: string;
   displayUrl: string;
