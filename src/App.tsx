@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { User } from 'firebase/auth';
-import { Layers, LayoutGrid, Plus, User as UserIcon, Camera } from 'lucide-react';
+import { Layers, LayoutGrid, Plus, User as UserIcon, Camera, LogIn } from 'lucide-react';
 import { CandidatePhoto, PhotoRecord, PhotoStatus, RuntimeConfig, UndoAction } from './types';
 import { isFirebaseConfigured, loadRuntimeConfig, saveRuntimeConfig } from './services/config';
 import {
@@ -40,9 +40,9 @@ export const App: React.FC = () => {
   const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [pickerLoadingText, setPickerLoadingText] = useState('');
+  const [activePickerUrl, setActivePickerUrl] = useState('');
   const [toastError, setToastError] = useState('');
 
-  // High-res in-memory blob URLs for the current session on the device where photos were picked
   const localBlobUrlsRef = useRef<Record<string, string>>({});
 
   const switchMode = useCallback((nextMode: AppMode, tab?: AdminTab) => {
@@ -127,6 +127,7 @@ export const App: React.FC = () => {
     setToastError('');
     if (!isFirebaseConfigured(config)) {
       setShowConfigModal(true);
+      setToastError('Firebase Project ID and API Key are missing — check Settings.');
       return '';
     }
     try {
@@ -145,32 +146,43 @@ export const App: React.FC = () => {
 
   const handleOpenGooglePicker = async () => {
     setToastError('');
-    let token = accessToken;
-    if (!token) {
-      token = await handleGoogleSignIn();
-    }
-    if (!token) {
+    if (!isAuthenticated || !accessToken) {
+      // Sign in first inside direct user gesture; once signed in, user can tap Pick from Google Photos
+      await handleGoogleSignIn();
       return;
     }
 
-    try {
-      setPickerLoadingText('Opening Google Photos...');
-      const session = await createPickerSession(token);
-      window.open(session.pickerUri, '_blank', 'width=980,height=740');
+    // Open blank window synchronously inside user tap so iOS Safari / mobile popup blockers allow it
+    const popupWin = window.open('about:blank', '_blank');
 
-      await pollPickerSessionUntilReady(session.id, token, (msg) => setPickerLoadingText(msg));
+    try {
+      setPickerLoadingText('Creating Google Photos Picker session...');
+      const session = await createPickerSession(accessToken);
+      setActivePickerUrl(session.pickerUri);
+
+      if (popupWin && !popupWin.closed) {
+        popupWin.location.href = session.pickerUri;
+      }
+
+      await pollPickerSessionUntilReady(session.id, accessToken, (msg) =>
+        setPickerLoadingText(msg)
+      );
 
       const existingStatusById: Record<string, string> = {};
       for (const [id, rec] of Object.entries(records)) {
         existingStatusById[id] = rec.status;
       }
 
-      const picked = await listPickedMediaItems(session.id, token, existingStatusById, (msg) =>
-        setPickerLoadingText(msg)
+      const picked = await listPickedMediaItems(
+        session.id,
+        accessToken,
+        existingStatusById,
+        (msg) => setPickerLoadingText(msg)
       );
 
       if (picked.length === 0) {
         setPickerLoadingText('');
+        setActivePickerUrl('');
         return;
       }
 
@@ -219,18 +231,17 @@ export const App: React.FC = () => {
         return next;
       });
 
-      await bulkUpsertPhotoRecords(
-        config,
-        true,
-        recordsToSync,
-        (savedCount, total) => {
-          setPickerLoadingText(`Syncing queue to cloud (${savedCount}/${total})...`);
-        }
-      );
+      await bulkUpsertPhotoRecords(config, true, recordsToSync, (savedCount, total) => {
+        setPickerLoadingText(`Syncing queue to cloud (${savedCount}/${total})...`);
+      });
     } catch (err) {
+      if (popupWin && !popupWin.closed) {
+        popupWin.close();
+      }
       setToastError(err instanceof Error ? err.message : String(err));
     } finally {
       setPickerLoadingText('');
+      setActivePickerUrl('');
     }
   };
 
@@ -406,17 +417,29 @@ export const App: React.FC = () => {
           </button>
         </nav>
 
-        {/* Clean Primary CTA + Account Avatar */}
+        {/* Explicit Sign-In vs Google Photos CTA + Account Avatar */}
         <div className="header-right-actions">
-          <button
-            id="btn-pick-google-photos"
-            type="button"
-            className="pill-btn pill-btn-ink"
-            onClick={handleOpenGooglePicker}
-          >
-            <Plus size={15} strokeWidth={2.5} />
-            <span>Google Photos</span>
-          </button>
+          {!isAuthenticated ? (
+            <button
+              id="btn-google-signin"
+              type="button"
+              className="pill-btn pill-btn-ink"
+              onClick={handleGoogleSignIn}
+            >
+              <LogIn size={15} />
+              <span>Sign In</span>
+            </button>
+          ) : (
+            <button
+              id="btn-pick-google-photos"
+              type="button"
+              className="pill-btn pill-btn-ink"
+              onClick={handleOpenGooglePicker}
+            >
+              <Plus size={15} strokeWidth={2.5} />
+              <span>Google Photos</span>
+            </button>
+          )}
 
           <button
             id="btn-open-account"
@@ -442,11 +465,18 @@ export const App: React.FC = () => {
       {toastError && (
         <div
           style={{
-            margin: '8px 14px 0',
-            padding: '10px 14px',
+            position: 'fixed',
+            top: 'calc(64px + env(safe-area-inset-top, 0px))',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 80,
+            width: 'calc(100% - 28px)',
+            maxWidth: '480px',
+            padding: '12px 16px',
             borderRadius: '14px',
-            background: 'var(--color-delete-soft)',
-            border: '1px solid rgba(225, 29, 72, 0.25)',
+            background: '#fff1f2',
+            border: '1px solid rgba(225, 29, 72, 0.35)',
+            boxShadow: '0 12px 30px rgba(0, 0, 0, 0.16)',
             color: 'var(--color-delete)',
             fontSize: '12px',
             fontWeight: 600,
@@ -454,7 +484,6 @@ export const App: React.FC = () => {
             alignItems: 'center',
             justifyContent: 'space-between',
             gap: '8px',
-            flexShrink: 0,
           }}
         >
           <span>{toastError}</span>
@@ -481,10 +510,12 @@ export const App: React.FC = () => {
           canUndo={undoStack.length > 0}
           onSwipe={handleSwipe}
           onUndo={handleUndo}
+          onSignIn={handleGoogleSignIn}
           onOpenGooglePicker={handleOpenGooglePicker}
           onJumpToAdmin={(tab) => switchMode('admin', tab)}
           counts={counts}
           pickerLoadingText={pickerLoadingText}
+          activePickerUrl={activePickerUrl}
           isCloudSynced={isAuthenticated}
         />
       ) : (

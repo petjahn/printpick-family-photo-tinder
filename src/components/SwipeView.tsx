@@ -8,6 +8,8 @@ import {
   Sparkles,
   Maximize2,
   Minimize2,
+  LogIn,
+  ExternalLink,
 } from 'lucide-react';
 import { CandidatePhoto, PhotoStatus } from '../types';
 
@@ -16,6 +18,7 @@ interface SwipeViewProps {
   canUndo: boolean;
   onSwipe: (photo: CandidatePhoto, status: PhotoStatus) => void;
   onUndo: () => void;
+  onSignIn: () => void;
   onOpenGooglePicker: () => void;
   onJumpToAdmin: (tab?: 'print' | 'delete' | 'shown') => void;
   counts: {
@@ -24,6 +27,7 @@ interface SwipeViewProps {
     shown: number;
   };
   pickerLoadingText: string;
+  activePickerUrl?: string;
   isCloudSynced?: boolean;
 }
 
@@ -44,10 +48,12 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
   canUndo,
   onSwipe,
   onUndo,
+  onSignIn,
   onOpenGooglePicker,
   onJumpToAdmin,
   counts,
   pickerLoadingText,
+  activePickerUrl,
   isCloudSynced,
 }) => {
   const current = queue[0] || null;
@@ -407,6 +413,18 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
             <p style={{ fontSize: '13px', color: 'var(--ink-secondary)', lineHeight: 1.5 }}>
               {pickerLoadingText}
             </p>
+            {activePickerUrl && (
+              <a
+                href={activePickerUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="pill-btn pill-btn-ink"
+                style={{ textDecoration: 'none', marginTop: '4px' }}
+              >
+                <ExternalLink size={15} />
+                <span>Open Google Photos Tab</span>
+              </a>
+            )}
           </div>
         ) : !current ? (
           <div
@@ -440,7 +458,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
             </div>
             <div>
               <h2 style={{ fontSize: '19px', fontWeight: 800, letterSpacing: '-0.02em' }}>
-                {isCloudSynced ? 'No Photos in Queue' : 'Sign In & Pick Photos'}
+                {isCloudSynced ? 'No Photos in Queue' : 'Welcome to PrintPick'}
               </h2>
               <p
                 style={{
@@ -453,7 +471,7 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
               >
                 {isCloudSynced
                   ? 'Select a batch from Google Photos to start swiping. Your queue stays synced across all your devices.'
-                  : 'Sign in with Google and select photos from Google Photos to start swiping.'}
+                  : 'Sign in with your Google account to sync your family queue and pick photos from Google Photos.'}
               </p>
             </div>
             <div
@@ -465,10 +483,21 @@ export const SwipeView: React.FC<SwipeViewProps> = ({
                 marginTop: '4px',
               }}
             >
-              <button type="button" className="pill-btn pill-btn-ink" onClick={onOpenGooglePicker}>
-                <ImagePlus size={16} />
-                <span>{isCloudSynced ? 'Pick from Google Photos' : 'Connect Google Photos'}</span>
-              </button>
+              {!isCloudSynced ? (
+                <button type="button" className="pill-btn pill-btn-ink" onClick={onSignIn}>
+                  <LogIn size={16} />
+                  <span>Sign in with Google</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="pill-btn pill-btn-ink"
+                  onClick={onOpenGooglePicker}
+                >
+                  <ImagePlus size={16} />
+                  <span>Pick from Google Photos</span>
+                </button>
+              )}
               {counts.print > 0 && (
                 <button
                   type="button"
